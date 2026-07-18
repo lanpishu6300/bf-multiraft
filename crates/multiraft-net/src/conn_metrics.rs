@@ -32,3 +32,26 @@ impl ConnMetrics {
         self.peers.lock().unwrap().len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_same_peer_twice_counts_once() {
+        let m = ConnMetrics::new();
+        m.record_peer(7);
+        m.record_peer(7);
+        assert_eq!(m.unique_peer_links(), 1);
+    }
+
+    #[test]
+    fn three_distinct_peers_count_three() {
+        let m = ConnMetrics::new();
+        m.record_peer(1);
+        m.record_peer(2);
+        m.record_peer(3);
+        assert_eq!(m.unique_peer_links(), 3);
+    }
+}
+
