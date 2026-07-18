@@ -10,8 +10,8 @@ This is an independent Rust workspace (not part of `downstream matching engine`)
 | --- | --- |
 | `multiraft-fsm` | Pluggable state machine trait |
 | `multiraft-store` | Raft log / state storage (stub) |
-| `multiraft-net` | Shared GroupRouter (O(nodes) in-process channels) |
-| `multiraft-core` | Multi-Raft orchestration (stub) |
+| `multiraft-net` | Shared GroupRouter + `MultiRaft` facade (`use multiraft_net::MultiRaft`) |
+| `multiraft-core` | TypeConfig, `ClusterConfig`, `MultiRaftError` / `ProposeOk` |
 | `multiraft-demo` | Minimal demo binary (stub) |
 
 ## Build & test
