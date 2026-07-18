@@ -45,12 +45,15 @@ With `--base-port 21000`:
 | 2 | `127.0.0.1:21001` | `http://127.0.0.1:21101` |
 | 3 | `127.0.0.1:21002` | `http://127.0.0.1:21102` |
 
-CLI flags: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`.
+CLI flags: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`, `--no-auto-propose`.
 
 Admin endpoints (per process in `--mode node`):
 
 - `GET /groups/{id}/value` — prefer `read_linearizable` (JSON `consistency: "linearizable"`); falls back to local FSM with `consistency: "local"` / `stale: true`, or HTTP 503
+- `POST /groups/{id}/inc` — JSON `{"delta":1,"idem":null}`; propose `CounterFsm` add (for Jepsen / external clients)
 - `GET /metrics/links` — `unique_peer_links()`
+
+Set `JEPSEN=1` or `NO_AUTO_PROPOSE=1` when calling `./scripts/run_demo_cluster.sh` to pass `--no-auto-propose` (disables the background propose loop).
 
 In-process regression (`--mode cluster`) still exposes `POST /admin/shutdown_node/{id}`.
 
@@ -70,10 +73,13 @@ Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANC
 | `read_linearizable` | Linearizable read (ReadIndex) |
 | `with_fsm` | Local / may be stale — debug only |
 
-See design §4.3.1 and [docs/jepsen.md](docs/jepsen.md) (Consistency Contract, porcupine checker, future Jepsen).
+See design §4.3.1 and [docs/jepsen.md](docs/jepsen.md) (Consistency Contract, porcupine, local Jepsen).
 
 ```bash
 cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
+
+# Local Jepsen (Java 17+, lein; ~30s smoke + kill nemesis)
+./scripts/run_jepsen.sh
 ```
 
 ## Build & test
