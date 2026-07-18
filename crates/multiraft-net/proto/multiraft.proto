@@ -1,0 +1,16 @@
+syntax = "proto3";
+package multiraft;
+
+service RaftService {
+  rpc Call(RaftRequest) returns (RaftResponse);
+}
+
+message RaftRequest {
+  uint64 group_id = 1;
+  string path = 2;
+  bytes payload = 3;
+}
+
+message RaftResponse {
+  bytes payload = 1;
+}
