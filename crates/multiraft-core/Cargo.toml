@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+multiraft-fsm = { path = "../multiraft-fsm" }
+openraft = { workspace = true }
+serde = { workspace = true }
