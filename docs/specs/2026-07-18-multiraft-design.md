@@ -143,18 +143,36 @@ restore(group, snapshot) -> ()
 `ApplyOut.effects`：可选，供 Leader 出站；Follower 可丢弃。  
 一期 demo：计数器或简易 KV + 幂等去重。
 
-### 4.3 运行时（`multiraft-core`）
+### 4.3 运行时（`multiraft-net::MultiRaft`；类型在 core）
 
 ```text
-start(ClusterConfig) -> MultiRaft
+start / start_cluster / start_grpc(ClusterConfig) -> MultiRaft
 create_group(group, members)
-propose(group, data) -> ProposeOk { index, term }   // commit 后返回（或 waiter）
+propose(group, data) -> ProposeOk { index, term }   // 多数派 commit+apply 后返回
+read_linearizable(group, f) -> R                    // ReadIndex 后读 FSM
+with_fsm(group, f) -> R                             // 本地读，可能 stale（调试用）
 is_leader(group) / leader(group)
 on_leader_change(callback)   // Ingress 启停该 group 的 RMQ 消费
 ```
 
-非 Leader `propose` → `NotLeader { hint }`。  
+非 Leader `propose` / `read_linearizable` → `NotLeader { hint }`。  
 一期 **静态** 3 节点成员，不做在线加减节点。
+
+### 4.3.1 Consistency Contract（per Group）
+
+对标 [Jepsen Consistency Models](https://jepsen.io/consistency/models)：每个 `GroupId`（symbol）是**一个对象**。
+
+| API | 承诺模型 | 说明 |
+|-----|----------|------|
+| `propose` Ok | **Linearizable 写** | Ok ⇒ 写已进入多数派提交历史且已 apply；失败/超时 ⇒ **不确定**，客户端须同幂等键重试 |
+| `read_linearizable` | **Linearizable 读** | 与集群写历史实时序一致；非 Leader → `NotLeader` |
+| `with_fsm` | **无强一致承诺**（local / eventual） | 仅观测/调试；禁止作下单 ACK、查单真值、清算依据 |
+| 多 Group | **组内** linearizable；**组间无事务** | 跨 symbol 原子需另建协调，不承诺 Strict Serializable |
+| 出站事件（二期） | 前缀一致有序流 | 不必 linearizable；带 `index`/`term` |
+
+**RMQ（二期 MUST）：** 仅 Leader 消费；**commit+apply 成功后再 ack**；切主后 at-least-once 重投 + FSM 幂等键。
+
+**不确定写：** 超时 / 连接断开 / 切主窗口的 propose 不得当作「确定失败」而不重试（无幂等时会双写）。
 
 ### 4.4 网络（`multiraft-net`）
 
