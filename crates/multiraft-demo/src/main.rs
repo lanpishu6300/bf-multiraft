@@ -12,9 +12,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use axum::Json;
 use axum::Router as AxumRouter;
 use axum::extract::Path;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::routing::get;
 use axum::routing::post;
 use clap::Parser;
@@ -24,6 +26,7 @@ use multiraft_core::MultiRaftError;
 use multiraft_fsm::CounterFsm;
 use multiraft_net::MultiRaft;
 use multiraft_net::wait_for_leader;
+use serde::Deserialize;
 use serde::Serialize;
 use tracing::info;
 use tracing::warn;
@@ -72,12 +75,20 @@ struct Args {
     /// Peer / logical node count (default 3).
     #[arg(long, default_value_t = 3)]
     nodes: u64,
+
+    /// Disable the background propose_loop (for Jepsen / external clients).
+    #[arg(long, default_value_t = false)]
+    no_auto_propose: bool,
 }
 
 struct DemoState {
     nodes: Vec<MultiRaft>,
     group_ids: Vec<u64>,
+    /// Monotonic local counter; combined with `node_id_base` for unique idem keys.
     idem: AtomicU64,
+    /// High bits for auto-generated idem (node_id << 32) so multi-process
+    /// demos do not collide and CounterFsm dedupe away successful proposes.
+    node_id_base: u64,
 }
 
 #[derive(Serialize)]
@@ -101,6 +112,32 @@ struct LinksResp {
 struct ShutdownNodeResp {
     node_id: u64,
     ok: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncReq {
+    #[serde(default = "default_delta")]
+    delta: i64,
+    #[serde(default)]
+    idem: Option<u64>,
+}
+
+fn default_delta() -> i64 {
+    1
+}
+
+#[derive(Serialize)]
+struct IncOkResp {
+    ok: bool,
+    index: u64,
+    term: u64,
+    group: u64,
+}
+
+#[derive(Serialize)]
+struct ErrResp {
+    ok: bool,
+    error: String,
 }
 
 #[tokio::main]
@@ -194,20 +231,26 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
         nodes,
         group_ids: group_ids.clone(),
         idem: AtomicU64::new(1),
+        // Cluster mode shares one AtomicU64; base 0 is fine.
+        node_id_base: 0,
     });
 
     let admin_addr: SocketAddr = ([127, 0, 0, 1], args.base_port).into();
     spawn_admin(admin_addr, Arc::clone(&state));
     info!(
         %admin_addr,
-        "admin HTTP listening (GET /groups/{{id}}/value, GET /metrics/links, \
-         POST /admin/shutdown_node/{{id}})"
+        "admin HTTP listening (GET /groups/{{id}}/value, POST /groups/{{id}}/inc, \
+         GET /metrics/links, POST /admin/shutdown_node/{{id}})"
     );
 
-    tokio::spawn({
-        let s = Arc::clone(&state);
-        async move { propose_loop(s).await }
-    });
+    if args.no_auto_propose {
+        info!("--no-auto-propose: skipping background propose_loop");
+    } else {
+        tokio::spawn({
+            let s = Arc::clone(&state);
+            async move { propose_loop(s).await }
+        });
+    }
 
     status_loop(state).await
 }
@@ -284,6 +327,7 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         nodes: vec![node],
         group_ids: group_ids.clone(),
         idem: AtomicU64::new(1),
+        node_id_base: node_id << 32,
     });
 
     let admin_addr = admin_addr_for_node(args.base_port, node_id);
@@ -291,13 +335,18 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     info!(
         %admin_addr,
         node_id,
-        "admin HTTP listening (GET /groups/{{id}}/value, GET /metrics/links)"
+        "admin HTTP listening (GET /groups/{{id}}/value, POST /groups/{{id}}/inc, \
+         GET /metrics/links)"
     );
 
-    tokio::spawn({
-        let s = Arc::clone(&state);
-        async move { propose_loop(s).await }
-    });
+    if args.no_auto_propose {
+        info!(node_id, "--no-auto-propose: skipping background propose_loop");
+    } else {
+        tokio::spawn({
+            let s = Arc::clone(&state);
+            async move { propose_loop(s).await }
+        });
+    }
 
     status_loop(state).await
 }
@@ -345,6 +394,12 @@ fn spawn_admin(admin_addr: SocketAddr, state: Arc<DemoState>) {
     });
 }
 
+/// Globally unique (across multi-process nodes) idempotency key.
+fn next_idem(state: &DemoState) -> u64 {
+    let local = state.idem.fetch_add(1, Ordering::Relaxed);
+    state.node_id_base | (local & 0xffff_ffff)
+}
+
 async fn status_loop(state: Arc<DemoState>) -> anyhow::Result<()> {
     let mut last_status = Instant::now() - Duration::from_secs(2);
     loop {
@@ -364,7 +419,7 @@ async fn propose_loop(state: Arc<DemoState>) {
                 if !n.is_leader(gid) {
                     continue;
                 }
-                let idem = state.idem.fetch_add(1, Ordering::Relaxed);
+                let idem = next_idem(&state);
                 let data = CounterFsm::encode_add(1, idem);
                 match n.propose(gid, data).await {
                     Ok(ok) => {
@@ -461,6 +516,7 @@ async fn read_group_value_best_effort(
 async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<()> {
     let app = AxumRouter::new()
         .route("/groups/:id/value", get(group_value))
+        .route("/groups/:id/inc", post(group_inc))
         .route("/metrics/links", get(metrics_links))
         .route("/admin/shutdown_node/:id", post(shutdown_node))
         .with_state(state);
@@ -468,6 +524,91 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Propose `CounterFsm::encode_add` on a local leader (or any local node with
+/// NotLeader retry). Used by Jepsen clients when `--no-auto-propose` is set.
+async fn group_inc(
+    State(state): State<Arc<DemoState>>,
+    Path(id): Path<u64>,
+    Json(body): Json<IncReq>,
+) -> Result<Json<IncOkResp>, (StatusCode, Json<ErrResp>)> {
+    if !state.group_ids.contains(&id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("unknown group {id}"),
+            }),
+        ));
+    }
+
+    let idem = body.idem.unwrap_or_else(|| next_idem(&state));
+    let data = CounterFsm::encode_add(body.delta, idem);
+
+    // 1) Prefer a local leader.
+    for n in &state.nodes {
+        if !n.is_leader(id) {
+            continue;
+        }
+        match n.propose(id, data.clone()).await {
+            Ok(ok) => {
+                return Ok(Json(IncOkResp {
+                    ok: true,
+                    index: ok.index,
+                    term: ok.term,
+                    group: id,
+                }));
+            }
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+
+    // 2) No local leader / race: try every local node.
+    let mut last_err: Option<MultiRaftError> = None;
+    for n in &state.nodes {
+        match n.propose(id, data.clone()).await {
+            Ok(ok) => {
+                return Ok(Json(IncOkResp {
+                    ok: true,
+                    index: ok.index,
+                    term: ok.term,
+                    group: id,
+                }));
+            }
+            Err(e @ MultiRaftError::NotLeader { .. }) => {
+                last_err = Some(e);
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "no local leader".into()),
+        }),
+    ))
 }
 
 async fn group_value(

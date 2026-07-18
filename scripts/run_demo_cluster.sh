@@ -15,6 +15,13 @@ GROUPS="${GROUPS:-10}"
 NODES="${NODES:-3}"
 DATA="${DATA_DIR:-$ROOT/.demo-data}"
 
+# Jepsen / external clients: disable background propose_loop.
+# Set via JEPSEN=1 or NO_AUTO_PROPOSE=1.
+NO_AUTO_PROPOSE_FLAG=()
+if [[ "${JEPSEN:-0}" == "1" || "${NO_AUTO_PROPOSE:-0}" == "1" ]]; then
+  NO_AUTO_PROPOSE_FLAG=(--no-auto-propose)
+fi
+
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
 rm -rf "$DATA"
@@ -35,6 +42,7 @@ while [[ "$id" -le "$NODES" ]]; do
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
     --data-dir "$NODE_DATA" \
+    "${NO_AUTO_PROPOSE_FLAG[@]}" \
     >"$DATA/node-$id.log" 2>&1 &
   echo $! >"$DATA/node-$id.pid"
   # Stagger binds so peers come up cleanly.
