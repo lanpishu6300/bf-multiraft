@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use openraft::BasicNode;
 use openraft::Config;
+use openraft::ReadPolicy;
 use openraft::async_runtime::WatchReceiver;
 use openraft::error::InitializeError;
 use openraft::error::RaftError;
@@ -284,7 +285,10 @@ impl<S: StateMachine> MultiRaft<S> {
     }
 
     /// Propose application bytes via openraft `client_write`.
-    /// Non-leader → [`MultiRaftError::NotLeader`].
+    ///
+    /// On `Ok`, the write is committed by a quorum and applied (linearizable write
+    /// for this group). Non-leader → [`MultiRaftError::NotLeader`].
+    /// Timeout / disconnect ⇒ outcome **unknown**; retry with the same idempotency key.
     pub async fn propose(&self, group: u64, data: Vec<u8>) -> Result<ProposeOk, MultiRaftError> {
         let raft = self
             .raft(group)
@@ -302,6 +306,38 @@ impl<S: StateMachine> MultiRaft<S> {
                     });
                 }
                 Err(MultiRaftError::Other(anyhow::anyhow!("client_write: {e}")))
+            }
+        }
+    }
+
+    /// Linearizable read: confirm leadership (ReadIndex), then read the local FSM.
+    ///
+    /// Non-leader → [`MultiRaftError::NotLeader`]. Use this for order-status / truth
+    /// reads. For debug-only stale reads, use [`Self::with_fsm`].
+    pub async fn read_linearizable<R>(
+        &self,
+        group: u64,
+        f: impl FnOnce(&S) -> R,
+    ) -> Result<R, MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+
+        match raft.ensure_linearizable(ReadPolicy::ReadIndex).await {
+            Ok(_read_log_id) => self.with_fsm(group, f).await.ok_or_else(|| {
+                MultiRaftError::Other(anyhow::anyhow!(
+                    "read_linearizable: fsm missing for group {group}"
+                ))
+            }),
+            Err(e) => {
+                if let Some(fwd) = e.forward_to_leader() {
+                    return Err(MultiRaftError::NotLeader {
+                        hint: fwd.leader_id,
+                    });
+                }
+                Err(MultiRaftError::Other(anyhow::anyhow!(
+                    "ensure_linearizable: {e}"
+                )))
             }
         }
     }
@@ -401,7 +437,10 @@ impl<S: StateMachine> MultiRaft<S> {
         Ok(())
     }
 
-    /// Inspect the local FSM for `group` (tests / local reads).
+    /// Inspect the **local** FSM for `group` without leadership confirmation.
+    ///
+    /// May be stale relative to the cluster. Prefer [`Self::read_linearizable`] for
+    /// application truth reads; keep this for tests / metrics / debug.
     pub async fn with_fsm<R>(&self, group: GroupId, f: impl FnOnce(&S) -> R) -> Option<R> {
         let sm = self
             .groups

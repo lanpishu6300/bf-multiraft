@@ -17,7 +17,8 @@ pub enum MultiRaftError {
     Other(#[from] anyhow::Error),
 }
 
-/// Successful propose: log index and term after commit/apply.
+/// Successful propose: log index and term after quorum commit + apply
+/// (linearizable write for that group).
 #[derive(Debug, Clone)]
 pub struct ProposeOk {
     pub index: u64,
