@@ -49,7 +49,7 @@ CLI flags: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-
 
 Admin endpoints (per process in `--mode node`):
 
-- `GET /groups/{id}/value` — local FSM value + leader
+- `GET /groups/{id}/value` — prefer `read_linearizable` (JSON `consistency: "linearizable"`); falls back to local FSM with `consistency: "local"` / `stale: true`, or HTTP 503
 - `GET /metrics/links` — `unique_peer_links()`
 
 In-process regression (`--mode cluster`) still exposes `POST /admin/shutdown_node/{id}`.
@@ -70,18 +70,24 @@ Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANC
 | `read_linearizable` | Linearizable read (ReadIndex) |
 | `with_fsm` | Local / may be stale — debug only |
 
-See design §4.3.1. Jepsen (Knossos) can target this register via `propose` + `read_linearizable`.
+See design §4.3.1 and [docs/jepsen.md](docs/jepsen.md) (Consistency Contract, porcupine checker, future Jepsen).
+
+```bash
+cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
+```
 
 ## Build & test
 
 ```bash
 cargo test --workspace
 cargo test -p multiraft-net --test linearizable_read
+cargo test -p multiraft-net --test linearizability_porcupine
 cargo test -p multiraft-net --test chaos_failover
 ./scripts/chaos.sh   # optional multi-process chaos
 ```
 
 Chaos coverage checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md).
+Jepsen / porcupine guide: [docs/jepsen.md](docs/jepsen.md).
 
 `scripts/chaos.sh` env:
 
