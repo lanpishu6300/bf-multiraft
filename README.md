@@ -66,6 +66,14 @@ Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANC
 
 ```bash
 cargo test --workspace
+cargo test -p multiraft-net --test chaos_failover
+./scripts/chaos.sh   # optional longer chaos
+```
+
+Or run the bundled suite (unit + chaos_failover + acceptance; set `CHAOS=1` for `chaos.sh`):
+
+```bash
+./scripts/test_all.sh
 ```
 
 Check a single crate:
