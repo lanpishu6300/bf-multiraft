@@ -1,5 +1,6 @@
 /target
 .demo-data/
 .acceptance-data/
+.chaos-data/
 **/*.rs.bk
 .DS_Store
