@@ -1,0 +1,23 @@
+# multiraft Wiki（中文）
+
+欢迎。本目录是**随代码版本化**的 Wiki。
+
+**English：** [en/Home.md](../en/Home.md) · **README：** [README.zh-CN.md](../../../README.zh-CN.md)
+
+## 页面
+
+| 页面 | 说明 |
+|------|------|
+| [快速开始](./Getting-Started.md) | 克隆、构建、Demo、验收 |
+| [架构](./Architecture.md) | Crate 边界、拓扑、一致性契约 |
+| [常见问题](./FAQ.md) | FAQ |
+| [路线图](./Roadmap.md) | 一期 / 二期 |
+| [相关项目](./Related-Projects.md) | downstream matching engine、openraft |
+
+## 快捷链接
+
+- [架构笔记](../../ARCHITECTURE.md)
+- [设计规格](../../specs/2026-07-18-multiraft-design.md)
+- [Jepsen / 一致性](../../jepsen.md)
+- [Chaos 清单](../../chaos-checklist.md)
+- [文档索引](../../README.md)
