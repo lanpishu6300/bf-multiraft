@@ -1,4 +1,5 @@
 /target
 .demo-data/
+.acceptance-data/
 **/*.rs.bk
 .DS_Store

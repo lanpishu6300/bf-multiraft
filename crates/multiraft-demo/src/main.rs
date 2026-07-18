@@ -16,6 +16,7 @@ use axum::Router as AxumRouter;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::routing::get;
+use axum::routing::post;
 use clap::Parser;
 use clap::ValueEnum;
 use multiraft_core::ClusterConfig;
@@ -83,6 +84,12 @@ struct GroupValueResp {
 #[derive(Serialize)]
 struct LinksResp {
     unique_peer_links: usize,
+}
+
+#[derive(Serialize)]
+struct ShutdownNodeResp {
+    node_id: u64,
+    ok: bool,
 }
 
 #[tokio::main]
@@ -188,7 +195,11 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
             warn!(error = %e, "admin HTTP exited");
         }
     });
-    info!(%admin_addr, "admin HTTP listening (GET /groups/{{id}}/value, GET /metrics/links)");
+    info!(
+        %admin_addr,
+        "admin HTTP listening (GET /groups/{{id}}/value, GET /metrics/links, \
+         POST /admin/shutdown_node/{{id}})"
+    );
 
     let propose_state = Arc::clone(&state);
     tokio::spawn(async move {
@@ -271,6 +282,7 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
     let app = AxumRouter::new()
         .route("/groups/:id/value", get(group_value))
         .route("/metrics/links", get(metrics_links))
+        .route("/admin/shutdown_node/:id", post(shutdown_node))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -306,4 +318,28 @@ async fn metrics_links(State(state): State<Arc<DemoState>>) -> axum::Json<LinksR
         .map(|n| n.router().unique_peer_links())
         .unwrap_or(0);
     axum::Json(LinksResp { unique_peer_links })
+}
+
+/// Shut down one logical MultiRaft node (in-process leader-loss simulation).
+///
+/// Remaining peers keep the shared Router and must re-elect leaders. This is
+/// the phase-1 stand-in for killing a true OS process (not available yet).
+async fn shutdown_node(
+    State(state): State<Arc<DemoState>>,
+    Path(id): Path<u64>,
+) -> Result<axum::Json<ShutdownNodeResp>, axum::http::StatusCode> {
+    let Some(node) = state.nodes.iter().find(|n| n.node_id() == id) else {
+        return Err(axum::http::StatusCode::NOT_FOUND);
+    };
+    info!(node_id = id, "admin: shutting down logical MultiRaft node");
+    node.shutdown()
+        .await
+        .map_err(|e| {
+            warn!(node_id = id, error = %e, "admin shutdown_node failed");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(axum::Json(ShutdownNodeResp {
+        node_id: id,
+        ok: true,
+    }))
 }
