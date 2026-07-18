@@ -39,7 +39,7 @@ Admin HTTP（每节点）     Raft gRPC（共享连接，O(nodes)）
 | `read_linearizable` | Linearizable 读（ReadIndex） |
 | `with_fsm` | 本地 / 可能 stale（仅调试） |
 
-组间**无事务**。详见 [jepsen.md](../../jepsen.md)。
+组间**无事务**。详见 [一致性与测试](./Consistency.md) · [jepsen.md](../../jepsen.md)。
 
 ## 二期集成（目标）
 
