@@ -8,8 +8,8 @@
 //! - [`MultiRaft::start`] starts **one** node with its own [`Router`].
 //! - [`MultiRaft::start_cluster`] starts N nodes sharing one [`Router`] (preferred for tests).
 //!
-//! `ClusterConfig::peers` socket addresses and `data_dir` are accepted but unused
-//! in phase-1 (channel linking; persistence is Task 6).
+//! `ClusterConfig::peers` socket addresses are unused in phase-1 (channel linking).
+//! Non-empty `data_dir` enables file-backed Raft logs under `{data_dir}/group-{id}/`.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -39,6 +39,7 @@ use multiraft_core::Request;
 use multiraft_core::TypeConfig;
 use multiraft_fsm::CounterFsm;
 use multiraft_fsm::StateMachine;
+use multiraft_store::FileLogStoreOf;
 use multiraft_store::MemLogStore;
 use multiraft_store::Raft;
 use multiraft_store::StateMachineStore;
@@ -236,6 +237,51 @@ impl<S: StateMachine> MultiRaft<S> {
         &self.router
     }
 
+    /// Shut down all local Raft groups cleanly (flush / stop core tasks).
+    pub async fn shutdown(&self) -> Result<(), MultiRaftError> {
+        let rafts: Vec<Raft<S>> = self
+            .groups
+            .lock()
+            .unwrap()
+            .values()
+            .map(|g| g.raft.clone())
+            .collect();
+        for raft in rafts {
+            raft.shutdown()
+                .await
+                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("shutdown: {e}")))?;
+        }
+        self.groups.lock().unwrap().clear();
+        Ok(())
+    }
+
+    /// Wait until the state machine has recovered at least the persisted commit
+    /// point after a restart (no-op when the log was empty).
+    pub async fn wait_for_recovery(
+        &self,
+        group: GroupId,
+        timeout: Duration,
+    ) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        raft.wait_for_recovery(Some(timeout))
+            .await
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("wait_for_recovery: {e}")))?;
+        Ok(())
+    }
+
+    /// Inspect the local FSM for `group` (tests / local reads).
+    pub async fn with_fsm<R>(&self, group: GroupId, f: impl FnOnce(&S) -> R) -> Option<R> {
+        let sm = self
+            .groups
+            .lock()
+            .unwrap()
+            .get(&group)
+            .map(|g| g.state_machine.clone())?;
+        Some(sm.with_fsm(f).await)
+    }
+
     fn raft(&self, group: GroupId) -> Option<Raft<S>> {
         self.groups
             .lock()
@@ -258,19 +304,33 @@ impl<S: StateMachine> MultiRaft<S> {
                 .map_err(|e| MultiRaftError::Other(anyhow::anyhow!(e.to_string())))?,
         );
 
-        let log_store = MemLogStore::default();
         let fsm = (self.make_fsm)(group);
         let state_machine_store = StateMachineStore::new(group, fsm);
         let network = NetworkFactory::new(self.router.clone(), group);
 
-        let raft = openraft::Raft::new(
-            self.node_id,
-            config,
-            network,
-            log_store,
-            state_machine_store.clone(),
-        )
-        .await
+        let raft = if self.config.data_dir.as_os_str().is_empty() {
+            let log_store = MemLogStore::default();
+            openraft::Raft::new(
+                self.node_id,
+                config,
+                network,
+                log_store,
+                state_machine_store.clone(),
+            )
+            .await
+        } else {
+            let dir = self.config.data_dir.join(format!("group-{group}"));
+            let log_store = FileLogStoreOf::open(&dir)
+                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
+            openraft::Raft::new(
+                self.node_id,
+                config,
+                network,
+                log_store,
+                state_machine_store.clone(),
+            )
+            .await
+        }
         .map_err(|e| MultiRaftError::Other(anyhow::anyhow!(e.to_string())))?;
 
         {
