@@ -41,12 +41,12 @@ Admin HTTP (per node)     Raft gRPC (shared, O(nodes))
 
 No cross-group transactions. See [Consistency & testing](./Consistency.md) · [jepsen.md](../../jepsen.md) · [中文](../../jepsen.zh-CN.md).
 
-## Phase-2 integration (target)
+## Downstream integration (phase 2, target)
 
 ```text
-match-contract (Leader-only RMQ)
+matching process / ingress shell (Leader-only RMQ)
   → multiraft propose
-  → FSM → match-core
+  → FSM → matching engine FSM
 ```
 
 ## Related designs

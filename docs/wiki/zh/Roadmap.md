@@ -11,10 +11,10 @@
 - [x] 本地 Jepsen（counter + kill nemesis）
 - [x] Consistency Contract + `read_linearizable`
 
-## 二期（`downstream matching engine`）
+## 二期（下游应用）
 
-- [ ] Leader 消费 RMQ → `propose`
-- [ ] FSM 适配 `match-core` + 幂等键
+- [ ] 可选 Leader 消费 RMQ → `propose`
+- [ ] 可插拔撮合引擎 FSM + 幂等键
 - [ ] 生产指标（propose 延迟、落后 index、切主次数）
 - [ ] 持久化 / snapshot 策略加固
 

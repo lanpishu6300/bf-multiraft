@@ -1,6 +1,6 @@
 (defproject jepsen.multiraft "0.1.0-SNAPSHOT"
   :description "Local (no SSH VMs) Jepsen suite for multiraft CounterFsm"
-  :url "https://github.com//multiraft"
+  :url "https://github.com/lanpishu6300/multiraft"
   :license {:name "Proprietary"}
   :dependencies [[org.clojure/clojure "1.11.3"]
                  [jepsen "0.3.9"]

@@ -1,8 +1,8 @@
 # multiraft
 
-面向 matching 撮合高可用的 **薄 Multi-Raft** 库：每交易对一个 Raft Group、节点间连接复用、FSM 可插拔。
+面向撮合高可用的 **薄 Multi-Raft** 库：每交易对一个 Raft Group、节点间连接复用、FSM 可插拔。
 
-基于 [openraft](https://github.com/databendlabs/openraft) + `openraft-multi`（精确锁版本）。姊妹仓为 [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine)；本仓一期交付运行时与 Demo，RMQ Leader propose / 真实撮合 FSM 在二期接入该仓。
+基于 [openraft](https://github.com/databendlabs/openraft) + `openraft-multi`（精确锁版本）。本仓一期交付运行时与 Demo；二期（可选，在下游应用中）接入 RMQ Leader propose 与可插拔撮合 FSM。
 
 **许可：** [Apache License 2.0](LICENSE)  
 **English：** [README.md](README.md)  
@@ -79,11 +79,11 @@ cargo test --workspace
 
 ---
 
-## 与 downstream matching engine
+## 下游集成（二期）
 
 ```text
-一期（本仓）     → 运行时 + Demo + 一致性测试
-二期（downstream matching engine） → RMQ Leader propose → FSM → match-core
+一期（本仓）         → 运行时 + Demo + 一致性测试
+二期（下游应用）     → 可选 RMQ Leader propose → 可插拔撮合 FSM
 ```
 
 ---

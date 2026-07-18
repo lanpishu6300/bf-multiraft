@@ -5,7 +5,7 @@
 **日期：** 2026-07-18  
 **状态：** Approved — 2026-07-18; Phase-1 + gRPC cross-process (Phase-1.5) implemented in multiraft  
 
-**关联：** [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine) 撮合引擎设计；本仓架构见 [ARCHITECTURE.md](../ARCHITECTURE.md) · [中文](../ARCHITECTURE.zh-CN.md)；一致性 / Jepsen 见 [jepsen.md](../jepsen.md) · [中文](../jepsen.zh-CN.md)  
+**关联：** 本仓架构见 [ARCHITECTURE.md](../ARCHITECTURE.md) · [中文](../ARCHITECTURE.zh-CN.md)；一致性 / Jepsen 见 [jepsen.md](../jepsen.md) · [中文](../jepsen.zh-CN.md)  
 **代码根：** 本仓库 `multiraft`
 
 ---
@@ -16,7 +16,7 @@
 |----|------|
 | 产品形态 | 撮合专用薄 Multi-Raft 运行时（非 TiKV raftstore 厚 fork） |
 | 共识库 | **openraft** + **openraft-multi**（共享连接、按 group 路由） |
-| 仓库 | 独立仓 `multiraft`；`downstream matching engine` 二期再依赖 |
+| 仓库 | 独立仓 `multiraft`；下游撮合应用二期可再依赖 |
 | 与 RMQ | **路径 B**：RMQ 仍入站；仅 Leader propose/复制；Follower 只跟状态 |
 | 分片 | `GroupId` ↔ symbol（稳定映射）；无 Region split/merge |
 | 一期验收 | ≥10 Group、3 节点、共享连接、杀 Leader 后已 commit 不丢 |
@@ -29,18 +29,18 @@
 
 ### 1.1 背景
 
-现网 / `downstream matching engine` 按 symbol 单线程撮合。多副本高可用若走 SOFAJRaft / TiKV Multi-Raft 厚栈，会带上 Region 调度、split/merge、PD 等撮合用不上的能力。Rust 侧无 SofaJRaft 等价物；需要一个**薄** Multi-Raft 库，专供「每交易对一个 Raft Group」。
+典型撮合引擎按 symbol 单线程撮合。多副本高可用若走 SOFAJRaft / TiKV Multi-Raft 厚栈，会带上 Region 调度、split/merge、PD 等撮合用不上的能力。Rust 侧无 SofaJRaft 等价物；需要一个**薄** Multi-Raft 库，专供「每交易对一个 Raft Group」。
 
 ### 1.2 目标（一期）
 
 1. 独立仓库交付可运行的 Multi-Raft 运行时（openraft 多 Group）。  
 2. 节点间连接复用，不随 Group 数线性增长。  
 3. `multiraft-demo`：≥10 Group、3 节点；杀 Leader 后已 commit 命令不丢，FSM 可对账。  
-4. FSM 通过 trait 注入；库本身不依赖 `match-core` / RocketMQ。
+4. FSM 通过 trait 注入；库本身不依赖撮合引擎 FSM / RocketMQ。
 
 ### 1.3 非目标（一期）
 
-- 不接真实 RMQ、不改 `match-contract` 生产路径。  
+- 不接真实 RMQ、不改下游撮合进程 / 入站壳生产路径。  
 - 不做动态 membership、PD、Region split/merge、Hibernate Region。  
 - 不设性能 SLO（可打点，不卡门）。  
 - 不做 Follower 只读 / LeaseRead。  
@@ -68,22 +68,22 @@ multiraft/
 | `multiraft-core` | 创建/销毁 Group、propose、领导权查询与回调 | 业务字段、RMQ |
 | `multiraft-net` | `(node, group_id)` 路由、连接复用 | 撮合协议 |
 | `multiraft-store` | 每 Group 独立 log 空间 | 订单簿 |
-| `multiraft-fsm` | `apply` / `snapshot` / `restore` trait | 依赖 `match-core` |
+| `multiraft-fsm` | `apply` / `snapshot` / `restore` trait | 依赖撮合引擎 FSM |
 | `multiraft-demo` | 假 FSM + 杀进程验切主 | 生产部署 |
 
-**与 `downstream matching engine`（二期）：**
+**下游集成（二期）：**
 
 ```text
-match-contract (RMQ consumer, Leader only)
+撮合进程 / 入站壳 (RMQ consumer, Leader only)
   → multiraft (propose / leader callbacks)
-    → FSM 适配器 → match-core
+    → FSM 适配器 → 撮合引擎 FSM
 ```
 
 ---
 
 ## 3. 数据流（RMQ 后复制）
 
-> **范围说明：** 本节描述与 `downstream matching engine` 集成后的目标架构。一期 `multiraft-demo` **不接 RMQ**，用本地注入 propose 模拟 Ingress；切主后「重放未 ack 命令」用脚本模拟 at-least-once。
+> **范围说明：** 本节描述与下游撮合应用集成后的目标架构。一期 `multiraft-demo` **不接 RMQ**，用本地注入 propose 模拟 Ingress；切主后「重放未 ack 命令」用脚本模拟 at-least-once。
 
 ### 3.1 角色
 
@@ -92,7 +92,7 @@ match-contract (RMQ consumer, Leader only)
 | Ingress（仅 Leader） | 消费 RMQ；校验；symbol → `group_id`；`propose` |
 | Raft（三节点） | 复制 log；多数派 commit |
 | FSM（每节点） | apply 已 commit 条目；Leader/Follower 同一套 apply |
-| Egress（仅 Leader） | apply 后出站（二期接 `match-contract`） |
+| Egress（仅 Leader） | apply 后出站（二期接撮合进程 / 入站壳） |
 
 Follower **不消费 RMQ**。
 
@@ -204,7 +204,7 @@ ClusterConfig {
 - 3 节点（同机多端口即可）
 - ≥10 Group
 - 共享连接
-- 不接真实 RMQ / `match-core`
+- 不接真实 RMQ / 撮合引擎 FSM
 
 ### 5.2 必须通过
 
@@ -226,8 +226,8 @@ ClusterConfig {
 
 ## 6. 二期（挂号）
 
-1. `downstream matching engine` 依赖本库：Leader 消费 RMQ → propose  
-2. FSM 适配 `match-core` + 幂等键  
+1. 下游撮合应用依赖本库：Leader 消费 RMQ → propose  
+2. 可插拔撮合引擎 FSM + 幂等键  
 3. 持久化与 snapshot 策略加固  
 4. 指标：propose 延迟、落后 index、Leader 切换次数  
 

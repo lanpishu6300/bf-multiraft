@@ -5,7 +5,7 @@
 **Date:** 2026-07-18  
 **Status:** Approved — 2026-07-18; Phase-1 + gRPC cross-process (Phase-1.5) implemented in multiraft  
 
-**Related:** [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine) matching-engine design; this repo architecture: [ARCHITECTURE.md](../ARCHITECTURE.md) · [中文](../ARCHITECTURE.zh-CN.md); consistency / Jepsen: [jepsen.md](../jepsen.md) · [中文](../jepsen.zh-CN.md)  
+**Related:** this repo architecture: [ARCHITECTURE.md](../ARCHITECTURE.md) · [中文](../ARCHITECTURE.zh-CN.md); consistency / Jepsen: [jepsen.md](../jepsen.md) · [中文](../jepsen.zh-CN.md)  
 **Code root:** this repository `multiraft`
 
 ---
@@ -16,7 +16,7 @@
 |------|--------|
 | Product shape | Thin Multi-Raft runtime for matching (not a thick TiKV raftstore fork) |
 | Consensus | **openraft** + **openraft-multi** (shared links, route by group) |
-| Repository | Independent `multiraft`; `downstream matching engine` depends in Phase-2 |
+| Repository | Independent `multiraft`; a downstream matching app may depend in Phase-2 |
 | vs RMQ | **Path B:** RMQ remains ingress; only Leader proposes/replicates; Followers follow state |
 | Sharding | `GroupId` ↔ symbol (stable mapping); no Region split/merge |
 | Phase-1 acceptance | ≥10 Groups, 3 nodes, shared links, committed commands survive Leader kill |
@@ -29,18 +29,18 @@
 
 ### 1.1 Background
 
-Production / `downstream matching engine` matches one symbol per single thread. Multi-replica HA via SOFAJRaft / TiKV Multi-Raft thick stacks brings Region scheduling, split/merge, PD, and other capabilities matching does not need. There is no SofaJRaft equivalent on the Rust side; we need a **thin** Multi-Raft library for “one Raft Group per trading pair.”
+Typical matching engines process one symbol per single thread. Multi-replica HA via SOFAJRaft / TiKV Multi-Raft thick stacks brings Region scheduling, split/merge, PD, and other capabilities matching does not need. There is no SofaJRaft equivalent on the Rust side; we need a **thin** Multi-Raft library for “one Raft Group per trading pair.”
 
 ### 1.2 Goals (Phase-1)
 
 1. Ship a runnable Multi-Raft runtime in an independent repo (openraft multi-group).  
 2. Reuse peer connections; link count must not grow linearly with Group count.  
 3. `multiraft-demo`: ≥10 Groups, 3 nodes; after Leader kill, committed commands are not lost; FSM can be reconciled.  
-4. FSM injected via trait; the library itself does not depend on `match-core` / RocketMQ.
+4. FSM injected via trait; the library itself does not depend on a matching engine FSM / RocketMQ.
 
 ### 1.3 Non-goals (Phase-1)
 
-- No real RMQ; do not change the `match-contract` production path.  
+- No real RMQ; do not change a downstream matching process / ingress shell production path.  
 - No dynamic membership, PD, Region split/merge, or Hibernate Region.  
 - No performance SLO (metrics OK; not a gate).  
 - No Follower read-only / LeaseRead.  
@@ -68,22 +68,22 @@ multiraft/
 | `multiraft-core` | Create/destroy Group, propose, leadership query & callbacks | Business fields, RMQ |
 | `multiraft-net` | `(node, group_id)` routing, connection reuse | Matching protocol |
 | `multiraft-store` | Independent log space per Group | Order book |
-| `multiraft-fsm` | `apply` / `snapshot` / `restore` trait | Depend on `match-core` |
+| `multiraft-fsm` | `apply` / `snapshot` / `restore` trait | Depend on a matching engine FSM |
 | `multiraft-demo` | Fake FSM + process kill for failover | Production deploy |
 
-**With `downstream matching engine` (Phase-2):**
+**Downstream integration (Phase-2):**
 
 ```text
-match-contract (RMQ consumer, Leader only)
+matching process / ingress shell (RMQ consumer, Leader only)
   → multiraft (propose / leader callbacks)
-    → FSM adapter → match-core
+    → FSM adapter → matching engine FSM
 ```
 
 ---
 
 ## 3. Data flow (RMQ then replicate)
 
-> **Scope note:** This section describes the target architecture after integrating with `downstream matching engine`. Phase-1 `multiraft-demo` **does not** attach RMQ; it simulates Ingress with local propose injection. After failover, “replay unacked commands” is simulated with scripts for at-least-once.
+> **Scope note:** This section describes the target architecture after integrating with a downstream matching app. Phase-1 `multiraft-demo` **does not** attach RMQ; it simulates Ingress with local propose injection. After failover, “replay unacked commands” is simulated with scripts for at-least-once.
 
 ### 3.1 Roles
 
@@ -92,7 +92,7 @@ match-contract (RMQ consumer, Leader only)
 | Ingress (Leader only) | Consume RMQ; validate; symbol → `group_id`; `propose` |
 | Raft (three nodes) | Replicate log; majority commit |
 | FSM (every node) | Apply committed entries; Leader/Follower share the same apply path |
-| Egress (Leader only) | Outbound after apply (Phase-2 via `match-contract`) |
+| Egress (Leader only) | Outbound after apply (Phase-2 via matching process / ingress shell) |
 
 Followers **do not** consume RMQ.
 
@@ -204,7 +204,7 @@ ClusterConfig {
 - 3 nodes (multi-port on one machine is fine)
 - ≥10 Groups
 - Shared connections
-- No real RMQ / `match-core`
+- No real RMQ / matching engine FSM
 
 ### 5.2 Must pass
 
@@ -226,8 +226,8 @@ ClusterConfig {
 
 ## 6. Phase-2 (backlog)
 
-1. `downstream matching engine` depends on this library: Leader consumes RMQ → propose  
-2. FSM adapts `match-core` + idempotency keys  
+1. Downstream matching app depends on this library: Leader consumes RMQ → propose  
+2. Pluggable matching engine FSM + idempotency keys  
 3. Harden persistence and snapshot policy  
 4. Metrics: propose latency, lag index, Leader switch count  
 
