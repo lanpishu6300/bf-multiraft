@@ -23,6 +23,7 @@ use openraft::raft::VoteResponse;
 use openraft_multi::GroupNetworkAdapter;
 use openraft_multi::GroupRouter;
 
+use crate::grpc::GrpcRouter;
 use crate::router::Router;
 use multiraft_core::GroupId;
 use multiraft_core::NodeId;
@@ -118,6 +119,27 @@ impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
     async fn new_client(&mut self, target: NodeId, _node: &openraft::BasicNode) -> Self::Network {
         // Binding (target, group) must NOT open a new peer link — groups share
         // the router's per-node channel (see `Router::unique_peer_links`).
+        GroupNetworkAdapter::new(self.router.clone(), target, self.group_id)
+    }
+}
+
+/// Network factory wrapping shared [`GrpcRouter`] + `group_id`.
+#[derive(Clone)]
+pub struct GrpcNetworkFactory {
+    pub router: GrpcRouter,
+    pub group_id: GroupId,
+}
+
+impl GrpcNetworkFactory {
+    pub fn new(router: GrpcRouter, group_id: GroupId) -> Self {
+        Self { router, group_id }
+    }
+}
+
+impl RaftNetworkFactory<TypeConfig> for GrpcNetworkFactory {
+    type Network = GroupNetworkAdapter<TypeConfig, GroupId, GrpcRouter>;
+
+    async fn new_client(&mut self, target: NodeId, _node: &openraft::BasicNode) -> Self::Network {
         GroupNetworkAdapter::new(self.router.clone(), target, self.group_id)
     }
 }

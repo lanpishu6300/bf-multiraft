@@ -1,4 +1,4 @@
-//! Public MultiRaft facade over the in-process shared-[`Router`] harness.
+//! Public MultiRaft facade over in-process [`Router`] or cross-process [`GrpcRouter`].
 //!
 //! Lives in `multiraft-net` (not `multiraft-core`) to avoid a core↔net dependency
 //! cycle: net already depends on core for [`TypeConfig`].
@@ -8,8 +8,10 @@
 //! - [`MultiRaft::start`] starts **one** node with its own [`Router`].
 //! - [`MultiRaft::start_cluster`] starts N nodes sharing one [`Router`] (preferred for tests).
 //!
-//! `ClusterConfig::peers` socket addresses are unused in phase-1 (channel linking).
-//! Non-empty `data_dir` enables file-backed Raft logs under `{data_dir}/group-{id}/`.
+//! # Cross-process (gRPC)
+//!
+//! - [`MultiRaft::start_grpc`] binds a tonic server on this node's peer addr and
+//!   uses [`GrpcRouter`] for outbound Raft RPCs.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -25,6 +27,9 @@ use openraft::error::InitializeError;
 use openraft::error::RaftError;
 use openraft::type_config::TypeConfigExt;
 
+use crate::grpc::GrpcRouter;
+use crate::grpc::GrpcServer;
+use crate::network::GrpcNetworkFactory;
 use crate::network::NetworkFactory;
 use crate::node::GroupApp;
 use crate::node::GroupMap;
@@ -68,13 +73,22 @@ impl ClusterGlue {
     }
 }
 
+enum NetBackend {
+    InProcess {
+        router: Router,
+        glue: ClusterGlue,
+    },
+    Grpc {
+        router: GrpcRouter,
+    },
+}
+
 /// Multi-Raft handle for one node (many groups).
 pub struct MultiRaft<S: StateMachine = CounterFsm> {
     node_id: NodeId,
     config: ClusterConfig,
-    router: Router,
+    net: NetBackend,
     groups: GroupMap<S>,
-    glue: ClusterGlue,
     make_fsm: Arc<dyn Fn(GroupId) -> S + Send + Sync>,
     leader_cbs: Arc<Mutex<Vec<LeaderCb>>>,
 }
@@ -103,6 +117,14 @@ impl MultiRaft<CounterFsm> {
         }
         Ok(nodes)
     }
+
+    /// Start one node with cross-process tonic transport.
+    ///
+    /// Binds a gRPC server on this node's address from `config.peers` and uses
+    /// [`GrpcRouter`] for outbound Raft RPCs to other peers.
+    pub async fn start_grpc(config: ClusterConfig) -> anyhow::Result<Self> {
+        Self::start_grpc_inner(config, |_| CounterFsm::new()).await
+    }
 }
 
 impl<S: StateMachine> MultiRaft<S> {
@@ -122,9 +144,50 @@ impl<S: StateMachine> MultiRaft<S> {
         Ok(Self {
             node_id: config.node_id,
             config,
-            router,
+            net: NetBackend::InProcess { router, glue },
             groups,
-            glue,
+            make_fsm: Arc::new(make_fsm),
+            leader_cbs: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
+    async fn start_grpc_inner<F>(config: ClusterConfig, make_fsm: F) -> anyhow::Result<Self>
+    where
+        F: Fn(GroupId) -> S + Send + Sync + 'static,
+    {
+        let self_addr = config
+            .peers
+            .iter()
+            .find(|(id, _)| *id == config.node_id)
+            .map(|(_, a)| *a)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "start_grpc: node {} missing from config.peers",
+                    config.node_id
+                )
+            })?;
+
+        let groups: GroupMap<S> = Arc::new(Mutex::new(BTreeMap::new()));
+        let grpc_router = GrpcRouter::new(config.peers.clone(), config.node_id);
+
+        let groups_for_server = groups.clone();
+        let listener = tokio::net::TcpListener::bind(self_addr).await?;
+        tokio::spawn(async move {
+            if let Err(e) = GrpcServer::serve_with_listener(listener, groups_for_server).await {
+                tracing::error!("grpc server on {self_addr} exited: {e:#}");
+            }
+        });
+
+        // Give the accept loop a moment to register with the runtime.
+        TypeConfig::sleep(Duration::from_millis(20)).await;
+
+        Ok(Self {
+            node_id: config.node_id,
+            config,
+            net: NetBackend::Grpc {
+                router: grpc_router,
+            },
+            groups,
             make_fsm: Arc::new(make_fsm),
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
         })
@@ -132,8 +195,11 @@ impl<S: StateMachine> MultiRaft<S> {
 
     /// Create (or idempotently ensure) a local Raft group peer.
     ///
-    /// When every `members` node in this in-process cluster has created the group,
-    /// membership is initialized once (any racing callers see `NotAllowed` and ignore).
+    /// **In-process:** when every `members` node has created the group, membership
+    /// is initialized once (racing callers see `NotAllowed` and ignore).
+    ///
+    /// **gRPC:** each process spawns the local raft then tries `initialize`;
+    /// `NotAllowed` is ignored (no cross-process ClusterGlue).
     pub async fn create_group(&self, group: u64, members: &[u64]) -> Result<(), MultiRaftError> {
         if members.is_empty() {
             return Err(MultiRaftError::Other(anyhow::anyhow!(
@@ -153,24 +219,38 @@ impl<S: StateMachine> MultiRaft<S> {
             self.spawn_local_group(group).await?;
         }
 
-        let all_ready = self.glue.mark_ready(group, self.node_id, members);
-        if all_ready && self.glue.try_claim_init(group) {
-            let raft = self
-                .raft(group)
-                .ok_or(MultiRaftError::UnknownGroup(group))?;
-            let nodes = self.membership_nodes(members);
-            match raft.initialize(nodes).await {
-                Ok(()) => {}
-                Err(RaftError::APIError(InitializeError::NotAllowed(_))) => {}
-                Err(e) => {
-                    return Err(MultiRaftError::Other(anyhow::anyhow!(
-                        "initialize group: {e}"
-                    )));
+        match &self.net {
+            NetBackend::InProcess { glue, .. } => {
+                let all_ready = glue.mark_ready(group, self.node_id, members);
+                if all_ready && glue.try_claim_init(group) {
+                    self.try_initialize(group, members).await?;
                 }
+            }
+            NetBackend::Grpc { .. } => {
+                // Cross-process: every node attempts initialize; loser gets NotAllowed.
+                self.try_initialize(group, members).await?;
             }
         }
 
         Ok(())
+    }
+
+    async fn try_initialize(
+        &self,
+        group: GroupId,
+        members: &[NodeId],
+    ) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let nodes = self.membership_nodes(members);
+        match raft.initialize(nodes).await {
+            Ok(()) => Ok(()),
+            Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
+            Err(e) => Err(MultiRaftError::Other(anyhow::anyhow!(
+                "initialize group: {e}"
+            ))),
+        }
     }
 
     /// Propose application bytes via openraft `client_write`.
@@ -233,14 +313,28 @@ impl<S: StateMachine> MultiRaft<S> {
         self.node_id
     }
 
+    /// In-process shared [`Router`] (panics if this node was started with gRPC).
     pub fn router(&self) -> &Router {
-        &self.router
+        match &self.net {
+            NetBackend::InProcess { router, .. } => router,
+            NetBackend::Grpc { .. } => {
+                panic!("router() is only available for in-process MultiRaft::start / start_cluster")
+            }
+        }
+    }
+
+    /// Distinct peer links: in-process router channels or gRPC peer channels.
+    pub fn unique_peer_links(&self) -> usize {
+        match &self.net {
+            NetBackend::InProcess { router, .. } => router.unique_peer_links(),
+            NetBackend::Grpc { router } => router.unique_peer_links(),
+        }
     }
 
     /// Shut down all local Raft groups cleanly (flush / stop core tasks).
     ///
-    /// Also unregisters this node from the shared [`Router`] so peers observe
-    /// it as unreachable (used by demo admin leader-loss simulation).
+    /// For in-process mode, also unregisters this node from the shared [`Router`]
+    /// so peers observe it as unreachable (used by demo admin leader-loss simulation).
     pub async fn shutdown(&self) -> Result<(), MultiRaftError> {
         let rafts: Vec<Raft<S>> = self
             .groups
@@ -255,7 +349,9 @@ impl<S: StateMachine> MultiRaft<S> {
                 .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("shutdown: {e}")))?;
         }
         self.groups.lock().unwrap().clear();
-        let _ = self.router.unregister_node(self.node_id);
+        if let NetBackend::InProcess { router, .. } = &self.net {
+            let _ = router.unregister_node(self.node_id);
+        }
         Ok(())
     }
 
@@ -310,30 +406,62 @@ impl<S: StateMachine> MultiRaft<S> {
 
         let fsm = (self.make_fsm)(group);
         let state_machine_store = StateMachineStore::new(group, fsm);
-        let network = NetworkFactory::new(self.router.clone(), group);
 
-        let raft = if self.config.data_dir.as_os_str().is_empty() {
-            let log_store = MemLogStore::default();
-            openraft::Raft::new(
-                self.node_id,
-                config,
-                network,
-                log_store,
-                state_machine_store.clone(),
-            )
-            .await
-        } else {
-            let dir = self.config.data_dir.join(format!("group-{group}"));
-            let log_store = FileLogStoreOf::open(&dir)
-                .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("open file log: {e}")))?;
-            openraft::Raft::new(
-                self.node_id,
-                config,
-                network,
-                log_store,
-                state_machine_store.clone(),
-            )
-            .await
+        let raft = match &self.net {
+            NetBackend::InProcess { router, .. } => {
+                let network = NetworkFactory::new(router.clone(), group);
+                if self.config.data_dir.as_os_str().is_empty() {
+                    let log_store = MemLogStore::default();
+                    openraft::Raft::new(
+                        self.node_id,
+                        config,
+                        network,
+                        log_store,
+                        state_machine_store.clone(),
+                    )
+                    .await
+                } else {
+                    let dir = self.config.data_dir.join(format!("group-{group}"));
+                    let log_store = FileLogStoreOf::open(&dir).map_err(|e| {
+                        MultiRaftError::Other(anyhow::anyhow!("open file log: {e}"))
+                    })?;
+                    openraft::Raft::new(
+                        self.node_id,
+                        config,
+                        network,
+                        log_store,
+                        state_machine_store.clone(),
+                    )
+                    .await
+                }
+            }
+            NetBackend::Grpc { router } => {
+                let network = GrpcNetworkFactory::new(router.clone(), group);
+                if self.config.data_dir.as_os_str().is_empty() {
+                    let log_store = MemLogStore::default();
+                    openraft::Raft::new(
+                        self.node_id,
+                        config,
+                        network,
+                        log_store,
+                        state_machine_store.clone(),
+                    )
+                    .await
+                } else {
+                    let dir = self.config.data_dir.join(format!("group-{group}"));
+                    let log_store = FileLogStoreOf::open(&dir).map_err(|e| {
+                        MultiRaftError::Other(anyhow::anyhow!("open file log: {e}"))
+                    })?;
+                    openraft::Raft::new(
+                        self.node_id,
+                        config,
+                        network,
+                        log_store,
+                        state_machine_store.clone(),
+                    )
+                    .await
+                }
+            }
         }
         .map_err(|e| MultiRaftError::Other(anyhow::anyhow!(e.to_string())))?;
 

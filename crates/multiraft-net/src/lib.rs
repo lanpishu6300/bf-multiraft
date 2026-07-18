@@ -3,18 +3,24 @@
 //! In-process [`Router`] adapted from openraft `examples/multi-raft-kv` at tag
 //! `v0.10.0-alpha.30`, implementing [`openraft_multi::GroupRouter`].
 //!
+//! Cross-process: [`GrpcRouter`] + tonic [`GrpcServer`] (UTF-8 JSON payloads).
+//!
 //! Public orchestration facade: [`MultiRaft`] (`use multiraft_net::MultiRaft`).
 
 mod api;
 mod conn_metrics;
+mod grpc;
 mod multiraft;
 mod network;
 mod node;
 mod router;
 
 pub use conn_metrics::ConnMetrics;
+pub use grpc::GrpcRouter;
+pub use grpc::GrpcServer;
 pub use multiraft::MultiRaft;
 pub use multiraft::wait_for_leader;
+pub use network::GrpcNetworkFactory;
 pub use network::NetworkFactory;
 pub use node::GroupApp;
 pub use node::Node;
