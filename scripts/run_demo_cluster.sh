@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Launch the phase-1 multiraft demo.
+# Launch a 3-process MultiRaft demo over gRPC (`--mode node`).
 #
-# Networking today is in-process only (shared Router). This script therefore
-# starts **one** `multiraft-demo --mode cluster` process that hosts 3 logical
-# nodes × 10 groups. True 3-OS-process clustering needs Task 8 / tonic.
+# Each OS process is one Raft node. Admin HTTP per node:
+#   node N → http://127.0.0.1:(BASE_PORT + 100 + N - 1)
+# Raft gRPC:
+#   node N → 127.0.0.1:(BASE_PORT + N - 1)
+#
+# Compatible with macOS Bash 3.2.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_PORT="${BASE_PORT:-21000}"
 GROUPS="${GROUPS:-10}"
-DATA="${ROOT}/.demo-data"
+NODES="${NODES:-3}"
+DATA="${DATA_DIR:-$ROOT/.demo-data}"
 
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
@@ -18,25 +22,33 @@ mkdir -p "$DATA"
 
 cargo build -p multiraft-demo --manifest-path "$ROOT/Cargo.toml"
 
-"$ROOT/target/debug/multiraft-demo" \
-  --mode cluster \
-  --base-port "$BASE_PORT" \
-  --groups "$GROUPS" \
-  --data-dir "$DATA" \
-  >"$DATA/cluster.log" 2>&1 &
-echo $! >"$DATA/cluster.pid"
+BIN="$ROOT/target/debug/multiraft-demo"
 
-# Compatibility stubs for scripts that expect per-node pid files (Task 8).
-# All point at the single cluster process for now.
-for id in 1 2 3; do
-  cp "$DATA/cluster.pid" "$DATA/node-$id.pid"
-  ln -sfn cluster.log "$DATA/node-$id.log"
+id=1
+while [[ "$id" -le "$NODES" ]]; do
+  NODE_DATA="$DATA/node-$id"
+  mkdir -p "$NODE_DATA"
+  "$BIN" \
+    --mode node \
+    --node-id "$id" \
+    --nodes "$NODES" \
+    --base-port "$BASE_PORT" \
+    --groups "$GROUPS" \
+    --data-dir "$NODE_DATA" \
+    >"$DATA/node-$id.log" 2>&1 &
+  echo $! >"$DATA/node-$id.pid"
+  # Stagger binds so peers come up cleanly.
+  sleep 0.4
+  id=$((id + 1))
 done
 
-cat <<EOF
-cluster started (single-process --mode cluster; 3 logical nodes × ${GROUPS} groups)
-  pid:  $(cat "$DATA/cluster.pid")
-  log:  $DATA/cluster.log
-  admin: http://127.0.0.1:${BASE_PORT}/groups/0/value
-         http://127.0.0.1:${BASE_PORT}/metrics/links
-EOF
+echo "cluster started (${NODES} OS processes × ${GROUPS} groups, gRPC)"
+echo "  data: $DATA"
+id=1
+while [[ "$id" -le "$NODES" ]]; do
+  admin_port=$((BASE_PORT + 100 + id - 1))
+  raft_port=$((BASE_PORT + id - 1))
+  echo "  node ${id}: pid=$(cat "$DATA/node-$id.pid") raft=127.0.0.1:${raft_port} admin=http://127.0.0.1:${admin_port}/groups/0/value log=$DATA/node-$id.log"
+  id=$((id + 1))
+done
+echo "  metrics: http://127.0.0.1:$((BASE_PORT + 100))/metrics/links"
