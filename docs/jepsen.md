@@ -1,8 +1,8 @@
-# Jepsen readiness & porcupine checker
+# Jepsen & porcupine
 
 This note describes the **Consistency Contract** for multiraft groups, the
-in-process porcupine linearizability test we run today, and what a full Jepsen
-suite would add later.
+in-process porcupine linearizability test, and the **local Jepsen** suite under
+`jepsen/multiraft/`.
 
 ## Consistency Contract (per group)
 
@@ -13,60 +13,88 @@ suite would add later.
 | Non-leader `propose` / `read_linearizable` | Returns `MultiRaftError::NotLeader { hint }`. Callers must retry on the leader (or another node after failover). |
 | `with_fsm(group, f)` | **Local / may be stale.** Debug, metrics, or last-resort admin fallback only — not application truth. |
 
-Demo admin `GET /groups/{id}/value` prefers `read_linearizable` on a local
-leader (then any local node). Only if every linearizable attempt fails does it
-fall back to `with_fsm` with `"consistency": "local"` and `"stale": true`, or
-HTTP 503 if no FSM value is available.
+Demo admin:
 
-## Porcupine test (today)
+- `GET /groups/{id}/value` — prefer `read_linearizable`; JSON includes `"consistency": "linearizable"` or `"local"` / `"stale": true`, or HTTP 503.
+- `POST /groups/{id}/inc` — body `{"delta":1,"idem":null}`; proposes `CounterFsm::encode_add` on a local leader (NotLeader retry across local nodes). Use with `--no-auto-propose` so the background propose loop does not race Jepsen clients.
 
-In-process, Jepsen-adjacent check using [porcupine-rs](https://crates.io/crates/porcupine-rs)
-(a Rust port of [Porcupine](https://github.com/anishathalye/porcupine)):
+## Porcupine test (CI gate)
+
+In-process check using [porcupine-rs](https://crates.io/crates/porcupine-rs):
 
 ```bash
 cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
 ```
 
-**Model:** a single counter/register per group.
+**Model:** a single counter/register per group. Mid-test leader shutdown once.
+Only successful ops enter the history.
 
-| Op | Call window | Model step |
-| --- | --- | --- |
-| `Inc { delta }` | start of successful `propose` → `ProposeOk` | `state += delta` |
-| `Read(value)` | start of successful `read_linearizable` → observed `i64` | accept iff `value == state` |
-
-**Workload:**
-
-- 3-node `MultiRaft::start_cluster`, one group
-- 8 concurrent clients, mixed propose(+1) and `read_linearizable` for ~3s
-- Mid-test: shut down the current leader once (chaos)
-- Only **successful** ops are recorded (failed / `NotLeader` attempts are retried; the successful attempt’s call/return times go into the history)
-- Assert: `porcupine_rs::check_operations::<CounterModel>(&history)`
-
-Related unit tests (no porcupine):
+Related:
 
 ```bash
 cargo test -p multiraft-net --test linearizable_read
 ```
 
-## Future: full Jepsen
+## Real Jepsen (local, no SSH VMs)
 
-A production-style Jepsen suite would typically:
+Clojure Jepsen 0.3.9 suite drives the **multi-process gRPC demo** over admin HTTP
+on `127.0.0.1`. Nodes are named `"1"` / `"2"` / `"3"` → admin
+`http://127.0.0.1:(BASE_PORT+100+id-1)`.
 
-1. **Client** — Clojure (or other) process driving the cluster over gRPC / admin HTTP: `propose` + `read_linearizable` against the real multi-process demo.
-2. **Checker** — [Knossos](https://github.com/jepsen-io/knossos) or [Elle](https://github.com/jepsen-io/elle) on the recorded history (register / counter / list-append as appropriate).
-3. **Nemesis** — process kill, pause, network partition, clock skew; map to our chaos scenarios in [docs/chaos-checklist.md](chaos-checklist.md).
-4. **Background** — [jepsen.io/consistency](https://jepsen.io/consistency) for the consistency model taxonomy.
+### Run (recommended)
 
-That work is **out of scope** for the current in-process porcupine test.
+```bash
+export PATH="$HOME/.cargo/bin:$HOME/bin:$PATH"
+./scripts/run_jepsen.sh
+```
 
-## What is / isn’t verified today
+What the wrapper does:
+
+1. Notes free disk (`df`)
+2. `cargo build -p multiraft-demo`
+3. Starts `./scripts/run_demo_cluster.sh` with `JEPSEN=1` / `NO_AUTO_PROPOSE=1`, `GROUPS=1`, `BASE_PORT=23000`, data under `.jepsen-data/`
+4. `cd jepsen/multiraft && lein run test -- --time-limit 30 --concurrency 6`
+5. Stops demo processes on exit
+
+Env knobs: `BASE_PORT`, `GROUPS`, `NODES`, `DATA_DIR`, `JEPSEN_TIME_LIMIT`, `JEPSEN_CONCURRENCY`, `JAVA_HOME`.
+
+### Workload
+
+| Op | Client |
+| --- | --- |
+| `:add` | `POST /groups/0/inc` `{"delta":1}` |
+| `:read` | `GET /groups/0/value` — fail/retry unless `"consistency":"linearizable"` |
+
+- **Checker:** `jepsen.checker/counter` (+ timeline/stats)
+- **Nemesis:** local `kill -9` of `.jepsen-data/node-$id.pid`, restart via absolute `target/debug/multiraft-demo --no-auto-propose`
+- **SSH:** `{:dummy? true}` — no remote VMs
+
+Project layout: [jepsen/multiraft/README.md](../jepsen/multiraft/README.md).
+
+### Java / Leiningen
+
+- Leiningen: install `lein` to `$HOME/bin` if missing (see repo scripts / Leiningen docs).
+- **Java 17+** preferred; Java 22 works with Jepsen 0.3.9 in this workspace. If dependency resolution fails on 22, set `JAVA_HOME` to a JDK 17 install (`/usr/libexec/java_home -v 17`).
+
+### Demo flags for external clients
+
+```bash
+NO_AUTO_PROPOSE=1 GROUPS=1 ./scripts/run_demo_cluster.sh
+# or
+JEPSEN=1 GROUPS=1 ./scripts/run_demo_cluster.sh
+```
+
+Equivalent CLI: `multiraft-demo --no-auto-propose ...`.
+
+## What is / isn’t verified
 
 | Verified | Not verified |
 | --- | --- |
-| Successful propose + `read_linearizable` histories are linearizable under one in-process leader kill | Multi-process / gRPC Jepsen with network partitions |
-| Follower `read_linearizable` returns `NotLeader` (unit test) | Disk-full, split-brain, Byzantine faults |
-| Chaos failover keeps the cluster writable (`chaos_failover`, `chaos.sh`) | Knossos/Elle on long multi-hour histories |
-| Demo admin prefers linearizable reads | That every admin caller honors `"stale": true` |
+| Porcupine on in-process propose + `read_linearizable` under one leader kill | Network partitions / netem |
+| Local Jepsen counter + process kill/restart (smoke via `run_jepsen.sh`) | Multi-hour / multi-datacenter Jepsen |
+| Chaos failover scripts (`chaos.sh`) | Disk-full, Byzantine faults |
+| Demo admin prefers linearizable reads; `/inc` for client-driven counters | That every admin caller honors `"stale": true` |
 
-Porcupine today is a **fast CI gate** for the Consistency Contract, not a
-substitute for a full Jepsen run against a deployed topology.
+Porcupine remains the fast CI gate; local Jepsen exercises the real multi-process
+demo and kill nemesis. Neither replaces a full remote Jepsen deployment with
+network partitions.
