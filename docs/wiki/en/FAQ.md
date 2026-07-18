@@ -20,7 +20,7 @@ No. It may be stale. Use `read_linearizable` for production reads.
 ### Where are Jepsen reports?
 
 After a run: `jepsen/multiraft/store/latest/` (gitignored). Case source lives
-under `jepsen/multiraft/src/`.
+under `jepsen/multiraft/src/`. More: [Consistency & testing](./Consistency.md).
 
 ### Relation to downstream matching engine?
 

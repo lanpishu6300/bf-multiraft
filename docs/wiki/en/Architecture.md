@@ -39,7 +39,7 @@ Admin HTTP (per node)     Raft gRPC (shared, O(nodes))
 | `read_linearizable` | Linearizable read (ReadIndex) |
 | `with_fsm` | Local / may be stale (debug only) |
 
-No cross-group transactions. See [jepsen.md](../../jepsen.md).
+No cross-group transactions. See [Consistency & testing](./Consistency.md) · [jepsen.md](../../jepsen.md).
 
 ## Phase-2 integration (target)
 
