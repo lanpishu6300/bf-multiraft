@@ -62,10 +62,21 @@ Acceptance (10 groups, kill real leader PID, durability + catch-up):
 
 Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANCE_DATA`, `NODES`.
 
+## Consistency (per group)
+
+| API | Model |
+| --- | --- |
+| `propose` Ok | Linearizable write |
+| `read_linearizable` | Linearizable read (ReadIndex) |
+| `with_fsm` | Local / may be stale — debug only |
+
+See design §4.3.1. Jepsen (Knossos) can target this register via `propose` + `read_linearizable`.
+
 ## Build & test
 
 ```bash
 cargo test --workspace
+cargo test -p multiraft-net --test linearizable_read
 cargo test -p multiraft-net --test chaos_failover
 ./scripts/chaos.sh   # optional multi-process chaos
 ```
