@@ -4,3 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+futures = { workspace = true }
+multiraft-core = { path = "../multiraft-core" }
+multiraft-fsm = { path = "../multiraft-fsm" }
+openraft = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
