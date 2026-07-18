@@ -1,0 +1,7 @@
+[package]
+name = "multiraft-fsm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

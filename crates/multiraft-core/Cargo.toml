@@ -1,0 +1,6 @@
+[package]
+name = "multiraft-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

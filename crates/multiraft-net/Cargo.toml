@@ -1,0 +1,6 @@
+[package]
+name = "multiraft-net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
