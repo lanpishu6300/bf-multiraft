@@ -24,5 +24,6 @@ protoc-bin-vendored = "3"
 tonic-build = { workspace = true }
 
 [dev-dependencies]
+porcupine-rs = "0.3"
 tempfile = "3"
 tracing-subscriber = { workspace = true }
