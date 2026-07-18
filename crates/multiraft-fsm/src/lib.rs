@@ -1,5 +1,8 @@
 //! Pluggable state machine for multiraft.
 
+mod counter_fsm;
+pub use counter_fsm::CounterFsm;
+
 pub type GroupId = u64;
 pub type NodeId = u64;
 
