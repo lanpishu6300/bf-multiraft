@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Phase-1 acceptance for multiraft (design §5.2, adapted to single-process demo).
+# Acceptance for multiraft multi-process gRPC demo (design §5.2).
 #
-# Demo is one OS process with 3 logical MultiRaft nodes (shared in-process Router).
-# Leader loss is simulated via POST /admin/shutdown_node/{id}.
+# Starts 3 OS processes via run_demo_cluster.sh, kills a real leader PID,
+# checks failover + durability, restarts the killed node, then runs unit tests.
 #
 # Compatible with macOS Bash 3.2 (no mapfile / namerefs).
 set -euo pipefail
@@ -12,80 +12,145 @@ export PATH="${HOME}/.cargo/bin:${PATH}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_PORT="${BASE_PORT:-21000}"
 GROUPS="${GROUPS:-10}"
+NODES="${NODES:-3}"
 DATA="${ACCEPTANCE_DATA:-$ROOT/.acceptance-data}"
-ADMIN="http://127.0.0.1:${BASE_PORT}"
-DEMO_PID=""
 WORKDIR=""
 
 log() { printf '[acceptance] %s\n' "$*"; }
 fail() { printf '[acceptance] FAIL: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
-  if [[ -n "${DEMO_PID}" ]] && kill -0 "${DEMO_PID}" 2>/dev/null; then
-    kill "${DEMO_PID}" 2>/dev/null || true
-    wait "${DEMO_PID}" 2>/dev/null || true
-  fi
+  stop_all_nodes
   if [[ -n "${WORKDIR}" && -d "${WORKDIR}" ]]; then
     rm -rf "${WORKDIR}"
   fi
 }
 trap cleanup EXIT
 
+admin_url() {
+  # admin for node id $1
+  local id="$1"
+  local port=$((BASE_PORT + 100 + id - 1))
+  echo "http://127.0.0.1:${port}"
+}
+
 http_get() {
   curl -fsS --max-time 3 "$1"
 }
 
-http_post() {
-  curl -fsS --max-time 5 -X POST "$1"
+stop_all_nodes() {
+  local id pid
+  if [[ ! -d "$DATA" ]]; then
+    return 0
+  fi
+  id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    if [[ -f "$DATA/node-$id.pid" ]]; then
+      pid="$(cat "$DATA/node-$id.pid" 2>/dev/null || true)"
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    fi
+    id=$((id + 1))
+  done
 }
 
-start_demo() {
+start_cluster() {
   local wipe="${1:-wipe}"
   if [[ "$wipe" == "wipe" ]]; then
+    stop_all_nodes
     rm -rf "$DATA"
   fi
   mkdir -p "$DATA"
+  DATA_DIR="$DATA" BASE_PORT="$BASE_PORT" GROUPS="$GROUPS" NODES="$NODES" \
+    "$ROOT/scripts/run_demo_cluster.sh" >/dev/null
+  log "cluster started data_dir=${DATA}"
+}
 
+start_one_node() {
+  local id="$1"
+  local node_data="$DATA/node-$id"
+  mkdir -p "$node_data"
   "$ROOT/target/debug/multiraft-demo" \
-    --mode cluster \
+    --mode node \
+    --node-id "$id" \
+    --nodes "$NODES" \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
-    --data-dir "$DATA" \
-    >"$DATA/cluster.log" 2>&1 &
-  DEMO_PID=$!
-  echo "$DEMO_PID" >"$DATA/cluster.pid"
-  log "demo started pid=${DEMO_PID} data_dir=${DATA}"
+    --data-dir "$node_data" \
+    >"$DATA/node-$id.log" 2>&1 &
+  echo $! >"$DATA/node-$id.pid"
+  log "restarted node ${id} pid=$(cat "$DATA/node-$id.pid")"
 }
 
-wait_admin() {
-  local deadline=$((SECONDS + 30))
-  while (( SECONDS < deadline )); do
-    if http_get "${ADMIN}/groups/0/value" >/dev/null 2>&1; then
+# Echo first live admin base URL, or empty.
+find_live_admin() {
+  local id url
+  id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    url="$(admin_url "$id")"
+    if http_get "${url}/groups/0/value" >/dev/null 2>&1; then
+      echo "$url"
       return 0
     fi
-    if [[ -n "${DEMO_PID}" ]] && ! kill -0 "${DEMO_PID}" 2>/dev/null; then
-      fail "demo exited early; see ${DATA}/cluster.log"
-    fi
-    sleep 0.2
+    id=$((id + 1))
   done
-  fail "admin HTTP not ready within 30s; see ${DATA}/cluster.log"
+  return 1
 }
 
-# Write lines "group value leader" to $1 (one per group).
+wait_any_admin() {
+  local deadline=$((SECONDS + 60))
+  local url
+  while (( SECONDS < deadline )); do
+    if url="$(find_live_admin)"; then
+      log "admin ready: ${url}"
+      return 0
+    fi
+    sleep 0.3
+  done
+  fail "no admin HTTP ready within 60s; see ${DATA}/node-*.log"
+}
+
+# Probe all live admins for group g; print "group value leader" using max value
+# and first non-empty leader seen.
+fetch_group_agg() {
+  local g="$1"
+  local id url json best_value best_leader v leader
+  best_value=""
+  best_leader=""
+  id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    url="$(admin_url "$id")"
+    if json="$(http_get "${url}/groups/${g}/value" 2>/dev/null)"; then
+      v="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["value"])' "$json")"
+      leader="$(python3 -c '
+import json,sys
+d=json.loads(sys.argv[1])
+print("" if d.get("leader") is None else str(d["leader"]))
+' "$json")"
+      if [[ -z "$best_value" ]] || [[ "$v" -gt "$best_value" ]]; then
+        best_value="$v"
+      fi
+      if [[ -z "$best_leader" && -n "$leader" ]]; then
+        best_leader="$leader"
+      fi
+    fi
+    id=$((id + 1))
+  done
+  [[ -n "$best_value" ]] || return 1
+  echo "${g} ${best_value} ${best_leader}"
+}
+
+# Write lines "group value leader" to $1 (one per group), aggregating live admins.
 fetch_all_groups() {
   local out="$1"
-  local g json
+  local g line
   : >"$out"
   g=0
   while [[ "$g" -lt "$GROUPS" ]]; do
-    json="$(http_get "${ADMIN}/groups/${g}/value")"
-    python3 -c '
-import json, sys
-d = json.loads(sys.argv[1])
-leader = d.get("leader")
-leader_s = "" if leader is None else str(leader)
-print("%s %s %s" % (d["group"], d["value"], leader_s))
-' "$json" >>"$out"
+    line="$(fetch_group_agg "$g")" || return 1
+    echo "$line" >>"$out"
     g=$((g + 1))
   done
 }
@@ -109,8 +174,29 @@ assert_groups_healthy() {
 }
 
 values_file() {
-  # stdin: group value leader lines → stdout: values only
   awk '{print $2}'
+}
+
+# Pick a leader node id from any live admin's view of group 0.
+pick_leader_node() {
+  local id url json leader
+  id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    url="$(admin_url "$id")"
+    if json="$(http_get "${url}/groups/0/value" 2>/dev/null)"; then
+      leader="$(python3 -c '
+import json,sys
+d=json.loads(sys.argv[1])
+print("" if d.get("leader") is None else str(d["leader"]))
+' "$json")"
+      if [[ -n "$leader" ]]; then
+        echo "$leader"
+        return 0
+      fi
+    fi
+    id=$((id + 1))
+  done
+  return 1
 }
 
 # --- prep ---
@@ -121,18 +207,19 @@ F3="${WORKDIR}/g3.txt"
 F4="${WORKDIR}/g4.txt"
 F5="${WORKDIR}/g5.txt"
 
-# --- build ---
-log "building multiraft-demo"
-cargo build -p multiraft-demo --manifest-path "$ROOT/Cargo.toml"
+# --- build + start ---
+log "building + starting multi-process demo"
+export DATA_DIR="$DATA"
+export BASE_PORT GROUPS NODES
+start_cluster wipe
+wait_any_admin
 
-# --- 1: start demo; values increase / leaders present ---
+# --- 1: multi-group writes ---
 log "check 1: multi-group writes (leaders + increasing values)"
-start_demo wipe
-wait_admin
 fetch_all_groups "$F1"
 assert_groups_healthy "check1-initial" "$F1"
 
-sleep 1.5
+sleep 2
 fetch_all_groups "$F2"
 assert_groups_healthy "check1-later" "$F2"
 
@@ -150,36 +237,28 @@ for i, (x, y) in enumerate(zip(b, a)):
   || fail "check1: not all group values increased"
 log "check 1 OK: all ${GROUPS} group values increased"
 
-# --- 2: shared connections ---
+# --- 2: shared connections on a live node ---
 log "check 2: unique_peer_links O(nodes)"
-LINKS_JSON="$(http_get "${ADMIN}/metrics/links")"
+LIVE_ADMIN="$(find_live_admin)" || fail "check2: no live admin"
+LINKS_JSON="$(http_get "${LIVE_ADMIN}/metrics/links")"
 LINKS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["unique_peer_links"])' "$LINKS_JSON")"
 [[ "$LINKS" -lt 10 ]] || fail "check2: unique_peer_links=${LINKS} not < 10"
 [[ "$LINKS" -le 6 ]] || fail "check2: unique_peer_links=${LINKS} not <= 6"
-if [[ "$LINKS" -ne 3 ]]; then
-  log "check2 note: expected 3 links, got ${LINKS} (still within bound)"
-fi
-log "check 2 OK: unique_peer_links=${LINKS}"
+log "check 2 OK: unique_peer_links=${LINKS} on ${LIVE_ADMIN}"
 
-# --- 3+4: logical node shutdown (leader loss) + commit durability ---
-log "check 3/4: shutdown one logical node; failover + values not lost"
+# --- 3: kill real leader OS process ---
+log "check 3: kill real leader process; wait for failover"
 fetch_all_groups "$F1"
 values_file <"$F1" >"${WORKDIR}/pre_failover_values.txt"
-KILL_NODE="$(python3 -c '
-import json,sys
-d=json.loads(sys.argv[1])
-print(d["leader"] if d.get("leader") is not None else 1)
-' "$(http_get "${ADMIN}/groups/0/value")")"
-log "shutting down logical node ${KILL_NODE}"
-SHUT_JSON="$(http_post "${ADMIN}/admin/shutdown_node/${KILL_NODE}")"
-python3 -c '
-import json,sys
-d=json.loads(sys.argv[1])
-assert d.get("ok") is True, d
-assert int(d["node_id"]) == int(sys.argv[2]), d
-' "$SHUT_JSON" "$KILL_NODE"
+KILL_NODE="$(pick_leader_node)" || fail "check3: could not determine a leader node id"
+KILL_PID="$(cat "$DATA/node-${KILL_NODE}.pid")"
+[[ -n "$KILL_PID" ]] || fail "check3: missing pid file for node ${KILL_NODE}"
+kill -0 "$KILL_PID" 2>/dev/null || fail "check3: pid ${KILL_PID} for node ${KILL_NODE} not running"
+log "killing leader node ${KILL_NODE} pid=${KILL_PID}"
+kill "$KILL_PID"
+wait "$KILL_PID" 2>/dev/null || true
 
-FAILOVER_DEADLINE=$((SECONDS + 20))
+FAILOVER_DEADLINE=$((SECONDS + 60))
 while true; do
   if fetch_all_groups "$F2" 2>/dev/null; then
     if python3 -c '
@@ -188,7 +267,7 @@ kill = sys.argv[1]
 ok = True
 for line in open(sys.argv[2]):
     parts = line.split()
-    if len(parts) < 3 or parts[2] == kill:
+    if len(parts) < 3 or not parts[2] or parts[2] == kill:
         ok = False
         break
 sys.exit(0 if ok else 1)
@@ -197,13 +276,15 @@ sys.exit(0 if ok else 1)
     fi
   fi
   if (( SECONDS >= FAILOVER_DEADLINE )); then
-    fail "check3: groups did not failover away from node ${KILL_NODE} within 20s"
+    fail "check3: groups did not failover away from node ${KILL_NODE} within 60s"
   fi
-  sleep 0.3
+  sleep 0.5
 done
 assert_groups_healthy "check3-after-failover" "$F2"
-log "check 3 OK: leaders are among remaining nodes (not ${KILL_NODE})"
+log "check 3 OK: leaders are not node ${KILL_NODE}"
 
+# --- 4: committed durability ---
+log "check 4: values >= pre-kill"
 values_file <"$F2" >"${WORKDIR}/post_failover_values.txt"
 python3 -c '
 import sys
@@ -216,7 +297,7 @@ for i, (a, b) in enumerate(zip(pre, post)):
 ' "${WORKDIR}/pre_failover_values.txt" "${WORKDIR}/post_failover_values.txt" \
   || fail "check4: committed values lost after failover"
 
-sleep 1.5
+sleep 2
 fetch_all_groups "$F3"
 values_file <"$F3" >"${WORKDIR}/post_grow_values.txt"
 python3 -c '
@@ -243,18 +324,34 @@ log "check 4 OK: committed values retained; ${GREW}/${GROUPS} groups still advan
 
 cp "${WORKDIR}/post_grow_values.txt" "${WORKDIR}/pre_restart_values.txt"
 
-# --- 5: restart whole demo process with same data_dir ---
-log "check 5: process restart with same data_dir"
-kill "${DEMO_PID}" 2>/dev/null || true
-wait "${DEMO_PID}" 2>/dev/null || true
-DEMO_PID=""
-sleep 0.5
-start_demo keep
-wait_admin
-fetch_all_groups "$F4"
-assert_groups_healthy "check5-after-restart" "$F4"
+# --- 5: restart killed node with same data_dir ---
+log "check 5: restart killed node ${KILL_NODE} with same data_dir"
+start_one_node "$KILL_NODE"
 
-values_file <"$F4" >"${WORKDIR}/restart_values.txt"
+CATCHUP_DEADLINE=$((SECONDS + 60))
+while true; do
+  if http_get "$(admin_url "$KILL_NODE")/groups/0/value" >/dev/null 2>&1 \
+    && fetch_all_groups "$F4" 2>/dev/null; then
+    values_file <"$F4" >"${WORKDIR}/restart_values.txt"
+    if python3 -c '
+import sys
+pre = [int(x) for x in open(sys.argv[1]).read().split()]
+post = [int(x) for x in open(sys.argv[2]).read().split()]
+assert len(pre) == len(post)
+for i, (a, b) in enumerate(zip(pre, post)):
+    if b < a:
+        raise SystemExit(1)
+sys.exit(0)
+' "${WORKDIR}/pre_restart_values.txt" "${WORKDIR}/restart_values.txt"; then
+      break
+    fi
+  fi
+  if (( SECONDS >= CATCHUP_DEADLINE )); then
+    fail "check5: restarted node did not catch up within 60s"
+  fi
+  sleep 0.5
+done
+assert_groups_healthy "check5-after-restart" "$F4"
 python3 -c '
 import sys
 pre = [int(x) for x in open(sys.argv[1]).read().split()]
@@ -265,16 +362,12 @@ for i, (a, b) in enumerate(zip(pre, post)):
         raise SystemExit("group %d lost value across restart (%d -> %d)" % (i, a, b))
 ' "${WORKDIR}/pre_restart_values.txt" "${WORKDIR}/restart_values.txt" \
   || fail "check5: values not restored after restart"
-log "check 5 OK: FSM values restored/caught-up after restart"
+log "check 5 OK: FSM values restored/caught-up after node restart"
 
-log "check 5b: cargo restart_recover tests"
-cargo test -p multiraft-store --test restart_recover --manifest-path "$ROOT/Cargo.toml"
-cargo test -p multiraft-net --test restart_recover --manifest-path "$ROOT/Cargo.toml"
-log "check 5b OK"
-
-# --- 6: NotLeader ---
-log "check 6: not_leader test"
+# --- 6: unit tests ---
+log "check 6: not_leader + grpc_cluster tests"
 cargo test -p multiraft-net --test not_leader --manifest-path "$ROOT/Cargo.toml"
+cargo test -p multiraft-net --test grpc_cluster --manifest-path "$ROOT/Cargo.toml"
 log "check 6 OK"
 
 log "ACCEPTANCE OK"
