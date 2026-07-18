@@ -112,35 +112,40 @@ def rewrite(text: str, is_zh: bool) -> str:
         "Related-Projects": "Related Projects",
     }
 
+    # Resolve relative markdown links from docs/wiki/{en|zh}/Page.md
+    wiki_cwd = pathlib.PurePosixPath("docs/wiki/zh" if is_zh else "docs/wiki/en")
+
     def repl_md(m):
         label, path = m.group(1), m.group(2)
+        if path.startswith("http://") or path.startswith("https://"):
+            return m.group(0)
         base = path.rsplit("/", 1)[-1]
-        if base in mapping:
-            page = mapping[base]
-            short = page.replace("Zh-", "")
-            return to_wiki_link(label, page)
-        # docs elsewhere → blob links
-        if path.startswith("../../"):
-            rel = path[len("../../"):]
-            return f"[{label}]({blob}/docs/{rel})"
-        if path.startswith("../../../"):
-            rel = path[len("../../../"):]
+        if base in mapping and (path.startswith("./") or path.startswith("../")):
+            # Same-tree wiki page (./X or ../en|zh/X)
+            if "/en/" in path or path.startswith("../en/"):
+                page = EN.get(base, mapping.get(base))
+            elif "/zh/" in path or path.startswith("../zh/"):
+                page = ZH.get(base)
+            else:
+                page = mapping.get(base)
+            if page:
+                return to_wiki_link(label, page)
+        # Repo file → canonical blob URL
+        if path.startswith("."):
+            resolved = pathlib.PurePosixPath(wiki_cwd / path)
+            # normalize .. segments
+            parts = []
+            for p in resolved.parts:
+                if p == "..":
+                    if parts:
+                        parts.pop()
+                elif p != ".":
+                    parts.append(p)
+            rel = "/".join(parts)
             return f"[{label}]({blob}/{rel})"
         return m.group(0)
 
-    text = re.sub(r"\[([^\]]+)\]\((\.\./[^)]+|./[^)]+)\)", repl_md, text)
-
-    # README / CONTRIBUTING style already handled; fix leftover ../ paths in prose links
-    text = re.sub(
-        r"\[([^\]]+)\]\(\.\./\.\./([^)]+)\)",
-        lambda m: f"[{m.group(1)}]({blob}/docs/{m.group(2)})",
-        text,
-    )
-    text = re.sub(
-        r"\[([^\]]+)\]\(\.\./\.\./\.\./([^)]+)\)",
-        lambda m: f"[{m.group(1)}]({blob}/{m.group(2)})",
-        text,
-    )
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl_md, text)
     return text
 
 for path in wiki.glob("*.md"):
