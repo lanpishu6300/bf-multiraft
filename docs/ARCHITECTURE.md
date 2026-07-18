@@ -9,9 +9,9 @@ Thin Multi-Raft runtime for matching HA. One Raft group per trading symbol
 ## Phase rule
 
 1. **Phase-1 (this repo):** library + multi-process demo + chaos / Jepsen.
-   No RocketMQ, no `match-core`.
-2. **Phase-2 (`downstream matching engine`):** Leader consumes RMQ → `propose`; FSM adapts
-   `match-core`. Followers do not consume ingress.
+   No RocketMQ, no matching engine FSM.
+2. **Phase-2 (downstream app):** optional Leader RMQ consume → `propose`;
+   pluggable matching engine FSM. Followers do not consume ingress.
 3. Do not pull match DTOs / RMQ into `multiraft-*` crates.
 
 ## Crate responsibilities
@@ -29,7 +29,7 @@ crates/
 |-------|------|----------|
 | `multiraft-core` | Shared types / errors | Networking, storage |
 | `multiraft-net` | `MultiRaft` API, O(nodes) links | Business commands |
-| `multiraft-fsm` | Trait + demo `CounterFsm` | Depend on `match-core` |
+| `multiraft-fsm` | Trait + demo `CounterFsm` | Depend on a matching engine FSM |
 | `multiraft-store` | Per-group persistence | Order book |
 | `multiraft-demo` | Acceptance / Jepsen target | Production deploy |
 
@@ -76,12 +76,12 @@ Failed / timed-out `propose` is **indeterminate** — retry with the same idempo
 Details: [specs/2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) · [中文](./specs/2026-07-18-multiraft-design.zh-CN.md) §4.3.1,
 [jepsen.md](./jepsen.md) · [中文](./jepsen.zh-CN.md).
 
-## Integration with downstream matching engine (phase 2)
+## Downstream integration (phase 2)
 
 ```text
-match-contract (RMQ consumer, Leader only)
+matching process / ingress shell (RMQ consumer, Leader only)
   → multiraft::MultiRaft (propose / leader callbacks)
-    → FSM adapter → match-core
+    → FSM adapter → matching engine FSM
 ```
 
 ## Upstream pin

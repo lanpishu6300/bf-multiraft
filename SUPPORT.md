@@ -11,7 +11,6 @@
 | Design / architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [中文](docs/ARCHITECTURE.zh-CN.md), [Wiki](docs/wiki/en/Home.md) |
 | Bugs / feature requests | [GitHub Issues](https://github.com/lanpishu6300/multiraft/issues) |
 | Security | [SECURITY.md](SECURITY.md) only |
-| Companion matching engines | [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine) |
 
 ## Before opening an issue
 

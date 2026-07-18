@@ -13,7 +13,7 @@
 
 **规格：** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
 
-**工作目录：** `/Users/lan//multiraft`（新 git 仓库）。始终 `export PATH="$HOME/.cargo/bin:$PATH"`。
+**工作目录：** `$REPO_ROOT`（新 git 仓库）。始终 `export PATH="$HOME/.cargo/bin:$PATH"`。
 
 **上游参考（只克隆阅读，不要整仓 vendor TiKV）：**
 ```bash
@@ -30,7 +30,7 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 |------|----------------|
 | `Cargo.toml` | Workspace root |
 | `README.md` | How to build/run demo + acceptance |
-| `docs/specs/2026-07-18-multiraft-design.md` | Copy or symlink of approved spec |
+| `docs/specs/2026-07-18-multiraft-design.md` | 已批准设计规格（仓内） |
 | `crates/multiraft-fsm/` | `StateMachine` trait + `ApplyOut` |
 | `crates/multiraft-store/` | Per-group log + SM storage (start: memory; then file-backed) |
 | `crates/multiraft-net/` | Shared router, connection counter, `GroupRouter` impl |
@@ -43,17 +43,17 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 ### Task 1: 搭建独立仓库 + workspace
 
 **文件：**
-- Create: `/Users/lan//multiraft/Cargo.toml`
-- Create: `/Users/lan//multiraft/README.md`
-- Create: `/Users/lan//multiraft/.gitignore`
-- Create: `/Users/lan//multiraft/crates/multiraft-fsm/{Cargo.toml,src/lib.rs}`
-- Create: `/Users/lan//multiraft/docs/specs/2026-07-18-multiraft-design.md` (copy from  docs)
+- Create: `$REPO_ROOT/Cargo.toml`
+- Create: `$REPO_ROOT/README.md`
+- Create: `$REPO_ROOT/.gitignore`
+- Create: `$REPO_ROOT/crates/multiraft-fsm/{Cargo.toml,src/lib.rs}`
+- Create: `$REPO_ROOT/docs/specs/2026-07-18-multiraft-design.md` （保留在仓内 docs/specs/）
 
 - [ ] **Step 1: 初始化 git 仓库并忽略 target**
 
 ```bash
-mkdir -p /Users/lan//multiraft
-cd /Users/lan//multiraft
+mkdir -p $REPO_ROOT
+cd $REPO_ROOT
 git init
 printf '%s\n' '/target' '**/*.rs.bk' '.DS_Store' > .gitignore
 ```
@@ -135,12 +135,11 @@ pub trait StateMachine: Send + 'static {
 
 暂时在 workspace `members` 中注释掉尚未存在的成员，直到 Task 2–5 创建它们，**或**创建带 `pub fn stub() {}` 的空 stub crate，以便 `cargo check` 可通过。
 
-- [ ] **Step 4: 复制规格 + README 骨架**
+- [ ] **Step 4: 确保仓内规格 + README 骨架**
 
 ```bash
 mkdir -p docs/specs
-cp /Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md \
-   docs/specs/2026-07-18-multiraft-design.md
+# 已批准设计保留在 docs/specs/2026-07-18-multiraft-design.md（仅仓内）
 ```
 
 ```markdown
@@ -160,7 +159,7 @@ cargo test --workspace
 - [ ] **Step 5: 验证并提交**
 
 ```bash
-cd /Users/lan//multiraft
+cd $REPO_ROOT
 cargo check -p multiraft-fsm
 git add -A
 git commit -m "$(cat <<'EOF'
@@ -634,12 +633,12 @@ EOF
 
 **文件：**
 - Modify: `README.md`
-- Modify:  spec status → Approved / Implemented-phase1 when done
+- Modify: 仓内 docs/specs/2026-07-18-multiraft-design.md 状态 → Approved / Implemented-phase1 when done
 - Create: `multiraft/docs/upstream.md`
 
-- [ ] **Step 1: 记录锁定版本、如何跑 acceptance、与 `downstream matching engine` 的关系（二期不在本计划范围）**
+- [ ] **Step 1: 记录锁定版本、如何跑 acceptance、以及下游集成说明（二期不在本计划范围）**
 
-- [ ] **Step 2: 将 `/Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md` 状态行更新为 `Approved — 2026-07-18`（实现状态另记）。**
+- [ ] **Step 2: 将 `docs/specs/2026-07-18-multiraft-design.md` 状态行更新为 `Approved — 2026-07-18`（实现状态另记）。**
 
 - [ ] **Step 3: 最终 `cargo test --workspace` + `./scripts/acceptance.sh`**
 
@@ -661,14 +660,14 @@ EOF
 |-----------|------|
 | Independent repo + crate split | 1, 3–7 |
 | openraft + openraft-multi | 3, 4 |
-| FSM trait / no match-core dep | 2 |
+| FSM trait / 不依赖撮合引擎 FSM | 2 |
 | RMQ path B (documented; demo injects) | Spec copy; demo Task 7 |
 | ≥10 groups shared connection | 4, 7, 8 |
 | Kill leader, commit durable | 8 |
 | Restart recovery | 6, 8 |
 | NotLeader | 5, 8 |
 | No dynamic membership / no TiKV fork | enforced by scope |
-| Phase-2 match-contract | explicitly out of this plan |
+| Phase-2 撮合进程 / 入站壳 | explicitly out of this plan |
 
 ## 占位 / 一致性自检
 

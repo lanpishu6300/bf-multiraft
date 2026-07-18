@@ -9,9 +9,9 @@
 ## 阶段规则
 
 1. **一期（本仓）：** 库 + 多进程 Demo + chaos / Jepsen。
-   不接 RocketMQ，不接 `match-core`。
-2. **二期（`downstream matching engine`）：** Leader 消费 RMQ → `propose`；FSM 适配
-   `match-core`。Follower 不消费入站。
+   不接 RocketMQ，不接撮合引擎 FSM。
+2. **二期（下游应用）：** 可选 Leader 消费 RMQ → `propose`；可插拔撮合引擎 FSM。
+   Follower 不消费入站。
 3. 不要把撮合 DTO / RMQ 拉进 `multiraft-*` crates。
 
 ## Crate 职责
@@ -29,7 +29,7 @@ crates/
 |-------|------|----------|
 | `multiraft-core` | 共享类型 / 错误 | 网络、存储 |
 | `multiraft-net` | `MultiRaft` API，O(nodes) 连接 | 业务命令 |
-| `multiraft-fsm` | Trait + demo `CounterFsm` | 依赖 `match-core` |
+| `multiraft-fsm` | Trait + demo `CounterFsm` | 依赖撮合引擎 FSM |
 | `multiraft-store` | 每 Group 持久化 | 订单簿 |
 | `multiraft-demo` | 验收 / Jepsen 靶标 | 生产部署 |
 
@@ -76,12 +76,12 @@ RMQ (per-symbol)
 详情：[specs/2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) · [中文](./specs/2026-07-18-multiraft-design.zh-CN.md) §4.3.1，
 [jepsen.md](./jepsen.md) · [中文](./jepsen.zh-CN.md)。
 
-## 与 downstream matching engine 集成（二期）
+## 下游集成（二期）
 
 ```text
-match-contract (RMQ consumer, Leader only)
+撮合进程 / 入站壳（RMQ consumer, Leader only）
   → multiraft::MultiRaft (propose / leader callbacks)
-    → FSM adapter → match-core
+    → FSM 适配器 → 撮合引擎 FSM
 ```
 
 ## 上游锁定

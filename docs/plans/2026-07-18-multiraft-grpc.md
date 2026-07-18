@@ -10,7 +10,7 @@
 
 **Tech Stack:** tonic, prost, tokio, existing openraft-multi `GroupRouter`, openraft `=0.10.0-alpha.30`
 
-**Workdir:** `/Users/lan//multiraft`
+**Workdir:** `$REPO_ROOT`
 
 ---
 

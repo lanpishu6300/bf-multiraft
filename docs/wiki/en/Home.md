@@ -13,7 +13,7 @@ Welcome. This in-repo wiki mirrors what many projects put on GitHub Wiki, and st
 | [Consistency & testing](./Consistency.md) | Contract, porcupine, Jepsen, chaos |
 | [FAQ](./FAQ.md) | Common questions |
 | [Roadmap](./Roadmap.md) | Phase-1 / Phase-2 |
-| [Related Projects](./Related-Projects.md) | downstream matching engine, openraft |
+| [Related Projects](./Related-Projects.md) | openraft, openraft-multi, Jepsen |
 
 ## Quick links
 

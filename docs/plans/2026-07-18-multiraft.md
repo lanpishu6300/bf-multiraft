@@ -12,7 +12,7 @@
 
 **Spec:** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
 
-**Workdir:** `/Users/lan//multiraft` (new git repo). Always `export PATH="$HOME/.cargo/bin:$PATH"`.
+**Workdir:** `$REPO_ROOT` (new git repo). Always `export PATH="$HOME/.cargo/bin:$PATH"`.
 
 **Upstream reference (clone once for reading, do not vendor whole TiKV):**
 ```bash
@@ -29,7 +29,7 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 |------|----------------|
 | `Cargo.toml` | Workspace root |
 | `README.md` | How to build/run demo + acceptance |
-| `docs/specs/2026-07-18-multiraft-design.md` | Copy or symlink of approved spec |
+| `docs/specs/2026-07-18-multiraft-design.md` | Approved design spec (in-repo) |
 | `crates/multiraft-fsm/` | `StateMachine` trait + `ApplyOut` |
 | `crates/multiraft-store/` | Per-group log + SM storage (start: memory; then file-backed) |
 | `crates/multiraft-net/` | Shared router, connection counter, `GroupRouter` impl |
@@ -42,17 +42,17 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 ### Task 1: Scaffold independent repo + workspace
 
 **Files:**
-- Create: `/Users/lan//multiraft/Cargo.toml`
-- Create: `/Users/lan//multiraft/README.md`
-- Create: `/Users/lan//multiraft/.gitignore`
-- Create: `/Users/lan//multiraft/crates/multiraft-fsm/{Cargo.toml,src/lib.rs}`
-- Create: `/Users/lan//multiraft/docs/specs/2026-07-18-multiraft-design.md` (copy from  docs)
+- Create: `$REPO_ROOT/Cargo.toml`
+- Create: `$REPO_ROOT/README.md`
+- Create: `$REPO_ROOT/.gitignore`
+- Create: `$REPO_ROOT/crates/multiraft-fsm/{Cargo.toml,src/lib.rs}`
+- Create: `$REPO_ROOT/docs/specs/2026-07-18-multiraft-design.md` (keep in-repo under docs/specs/)
 
 - [ ] **Step 1: Init git repo and ignore target**
 
 ```bash
-mkdir -p /Users/lan//multiraft
-cd /Users/lan//multiraft
+mkdir -p $REPO_ROOT
+cd $REPO_ROOT
 git init
 printf '%s\n' '/target' '**/*.rs.bk' '.DS_Store' > .gitignore
 ```
@@ -134,12 +134,11 @@ pub trait StateMachine: Send + 'static {
 
 Temporarily comment out non-existent members in workspace `members` until Task 2–5 create them, **or** create empty stub crates with `pub fn stub() {}` so `cargo check` works.
 
-- [ ] **Step 4: Copy spec + README skeleton**
+- [ ] **Step 4: Ensure in-repo spec + README skeleton**
 
 ```bash
 mkdir -p docs/specs
-cp /Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md \
-   docs/specs/2026-07-18-multiraft-design.md
+# Keep the approved design at docs/specs/2026-07-18-multiraft-design.md (in-repo only)
 ```
 
 ```markdown
@@ -159,7 +158,7 @@ cargo test --workspace
 - [ ] **Step 5: Verify + commit**
 
 ```bash
-cd /Users/lan//multiraft
+cd $REPO_ROOT
 cargo check -p multiraft-fsm
 git add -A
 git commit -m "$(cat <<'EOF'
@@ -633,12 +632,12 @@ EOF
 
 **Files:**
 - Modify: `README.md`
-- Modify:  spec status → Approved / Implemented-phase1 when done
+- Modify: in-repo docs/specs/2026-07-18-multiraft-design.md status → Approved / Implemented-phase1 when done
 - Create: `multiraft/docs/upstream.md`
 
-- [ ] **Step 1: Document pinned versions, how to run acceptance, relation to `downstream matching engine` (phase 2 out of scope)**
+- [ ] **Step 1: Document pinned versions, how to run acceptance, and Downstream integration (phase 2 out of scope)**
 
-- [ ] **Step 2: Update `/Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md` status line to `Approved — 2026-07-18` (implementation status separate).
+- [ ] **Step 2: Update `docs/specs/2026-07-18-multiraft-design.md` status line to `Approved — 2026-07-18` (implementation status separate).
 
 - [ ] **Step 3: Final `cargo test --workspace` + `./scripts/acceptance.sh`**
 
@@ -660,14 +659,14 @@ EOF
 |-----------|------|
 | Independent repo + crate split | 1, 3–7 |
 | openraft + openraft-multi | 3, 4 |
-| FSM trait / no match-core dep | 2 |
+| FSM trait / no matching-engine-FSM dep | 2 |
 | RMQ path B (documented; demo injects) | Spec copy; demo Task 7 |
 | ≥10 groups shared connection | 4, 7, 8 |
 | Kill leader, commit durable | 8 |
 | Restart recovery | 6, 8 |
 | NotLeader | 5, 8 |
 | No dynamic membership / no TiKV fork | enforced by scope |
-| Phase-2 match-contract | explicitly out of this plan |
+| Phase-2 matching process / ingress shell | explicitly out of this plan |
 
 ## Placeholder / consistency self-review
 

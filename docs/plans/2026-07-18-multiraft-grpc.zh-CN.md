@@ -11,7 +11,7 @@
 
 **技术栈：** tonic, prost, tokio, 既有 openraft-multi `GroupRouter`, openraft `=0.10.0-alpha.30`
 
-**工作目录：** `/Users/lan//multiraft`
+**工作目录：** `$REPO_ROOT`
 
 ---
 
