@@ -238,6 +238,9 @@ impl<S: StateMachine> MultiRaft<S> {
     }
 
     /// Shut down all local Raft groups cleanly (flush / stop core tasks).
+    ///
+    /// Also unregisters this node from the shared [`Router`] so peers observe
+    /// it as unreachable (used by demo admin leader-loss simulation).
     pub async fn shutdown(&self) -> Result<(), MultiRaftError> {
         let rafts: Vec<Raft<S>> = self
             .groups
@@ -252,6 +255,7 @@ impl<S: StateMachine> MultiRaft<S> {
                 .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("shutdown: {e}")))?;
         }
         self.groups.lock().unwrap().clear();
+        let _ = self.router.unregister_node(self.node_id);
         Ok(())
     }
 
