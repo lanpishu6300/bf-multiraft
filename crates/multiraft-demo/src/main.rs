@@ -85,6 +85,11 @@ struct GroupValueResp {
     group: u64,
     value: i64,
     leader: Option<u64>,
+    /// `"linearizable"` after a successful ReadIndex read; `"local"` for FSM fallback.
+    consistency: &'static str,
+    /// Present (and `true`) only when serving a non-linearizable local FSM value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stale: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -397,20 +402,60 @@ async fn print_status(state: &DemoState) {
 
     for &gid in &state.group_ids {
         let leader = state.nodes.iter().find_map(|n| n.leader(gid));
-        let mut value = 0i64;
-        for n in &state.nodes {
-            if let Some(v) = n.with_fsm(gid, |fsm| fsm.value(gid)).await {
-                value = value.max(v);
-            }
-        }
+        let (value, consistency) = match read_group_value_best_effort(state, gid).await {
+            Ok((v, c)) => (v, c),
+            Err(()) => (0i64, "unavailable"),
+        };
         info!(
             group = gid,
             ?leader,
             value,
+            consistency,
             unique_peer_links = links,
             "status"
         );
     }
+}
+
+/// Prefer a local leader's `read_linearizable`, then any other local node's
+/// linearizable read, then a possibly-stale `with_fsm` observation.
+async fn read_group_value_best_effort(
+    state: &DemoState,
+    group: u64,
+) -> Result<(i64, &'static str), ()> {
+    // 1) Prefer the local node that believes it is leader.
+    for n in &state.nodes {
+        if !n.is_leader(group) {
+            continue;
+        }
+        match n.read_linearizable(group, |fsm| fsm.value(group)).await {
+            Ok(v) => return Ok((v, "linearizable")),
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                tracing::debug!(group, node = n.node_id(), error = %e, "leader linearizable read failed");
+            }
+        }
+    }
+
+    // 2) NotLeader race / no local leader: try every local node.
+    for n in &state.nodes {
+        match n.read_linearizable(group, |fsm| fsm.value(group)).await {
+            Ok(v) => return Ok((v, "linearizable")),
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                tracing::debug!(group, node = n.node_id(), error = %e, "linearizable read failed");
+            }
+        }
+    }
+
+    // 3) Last resort: local FSM (may be stale).
+    let mut best: Option<i64> = None;
+    for n in &state.nodes {
+        if let Some(v) = n.with_fsm(group, |fsm| fsm.value(group)).await {
+            best = Some(best.map_or(v, |b| b.max(v)));
+        }
+    }
+    best.map(|v| (v, "local")).ok_or(())
 }
 
 async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<()> {
@@ -433,17 +478,23 @@ async fn group_value(
         return Err(axum::http::StatusCode::NOT_FOUND);
     }
     let leader = state.nodes.iter().find_map(|n| n.leader(id));
-    let mut value = 0i64;
-    for n in &state.nodes {
-        if let Some(v) = n.with_fsm(id, |fsm| fsm.value(id)).await {
-            value = value.max(v);
-        }
+    match read_group_value_best_effort(&state, id).await {
+        Ok((value, "linearizable")) => Ok(axum::Json(GroupValueResp {
+            group: id,
+            value,
+            leader,
+            consistency: "linearizable",
+            stale: None,
+        })),
+        Ok((value, _)) => Ok(axum::Json(GroupValueResp {
+            group: id,
+            value,
+            leader,
+            consistency: "local",
+            stale: Some(true),
+        })),
+        Err(()) => Err(axum::http::StatusCode::SERVICE_UNAVAILABLE),
     }
-    Ok(axum::Json(GroupValueResp {
-        group: id,
-        value,
-        leader,
-    }))
 }
 
 async fn metrics_links(State(state): State<Arc<DemoState>>) -> axum::Json<LinksResp> {
