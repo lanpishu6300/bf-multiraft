@@ -442,6 +442,19 @@ dependencies = [
 [[package]]
 name = "multiraft-net"
 version = "0.1.0"
+dependencies = [
+ "futures",
+ "multiraft-core",
+ "multiraft-fsm",
+ "multiraft-store",
+ "openraft",
+ "openraft-multi",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "multiraft-store"
@@ -520,6 +533,16 @@ dependencies = [
  "quote",
  "semver",
  "syn",
+]
+
+[[package]]
+name = "openraft-multi"
+version = "0.10.0-alpha.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c68d04b67c7b8fd289828a675a03ee4deb915fe55e5594b2fc4e453be7fe304"
+dependencies = [
+ "anyerror",
+ "openraft",
 ]
 
 [[package]]
