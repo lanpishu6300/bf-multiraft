@@ -2,5 +2,9 @@
 .demo-data/
 .acceptance-data/
 .chaos-data/
+.jepsen-data/
+jepsen/multiraft/store/
+jepsen/multiraft/.cpcache/
+jepsen/multiraft/target/
 **/*.rs.bk
 .DS_Store
