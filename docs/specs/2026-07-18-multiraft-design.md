@@ -1,7 +1,8 @@
 # multiraft 撮合专用薄 Multi-Raft 设计
 
 **日期：** 2026-07-18  
-**状态：** Approved — 2026-07-18  
+**状态：** Approved — 2026-07-18; Phase-1 implemented in multiraft  
+
 **关联：** [2026-07-17-rust-match-engines-design.md](./2026-07-17-rust-match-engines-design.md)  
 **代码根（拟）：** `/Users/lan//multiraft/`（独立 git 仓库）
 
