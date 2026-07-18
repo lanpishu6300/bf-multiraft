@@ -50,7 +50,7 @@ in that repo.
 | `multiraft-store` | File-backed Raft storage |
 | `multiraft-demo` | 3-node × N-group acceptance target |
 
-Full notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Full notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [中文](docs/ARCHITECTURE.zh-CN.md).
 
 ### Dependency pin
 
@@ -59,7 +59,7 @@ Full notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | `openraft` | `=0.10.0-alpha.30` |
 | `openraft-multi` | `=0.10.0-alpha.30` |
 
-See [docs/upstream.md](docs/upstream.md).
+See [docs/upstream.md](docs/upstream.md) · [中文](docs/upstream.zh-CN.md).
 
 ---
 
@@ -111,7 +111,7 @@ CLI: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`,
 | `read_linearizable` | Linearizable read (ReadIndex) |
 | `with_fsm` | Local / may be stale — debug only |
 
-See [docs/jepsen.md](docs/jepsen.md).
+See [docs/jepsen.md](docs/jepsen.md) · [中文](docs/jepsen.zh-CN.md).
 
 ---
 
@@ -127,7 +127,7 @@ cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
 cargo test -p multiraft-net --test chaos_failover
 ```
 
-Chaos checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md).  
+Chaos checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md) · [中文](docs/chaos-checklist.zh-CN.md).  
 Clean `target/` before large rebuilds if disk is tight.
 
 ---
@@ -141,11 +141,16 @@ Phase-2 (downstream matching engine) → RMQ Leader propose → FSM → match-co
 
 ---
 
-## Documentation
+## Documentation (bilingual)
+
+Every file under `docs/` (architecture, Jepsen, chaos, upstream, specs, plans) has an English `foo.md` and Chinese `foo.zh-CN.md` pair with a language switcher under the H1. Wiki pages are already bilingual under `docs/wiki/en/` and `docs/wiki/zh/`.
 
 | Doc | Topic |
 |-----|-------|
-| [docs/README.md](docs/README.md) | Index |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crate boundaries |
-| [docs/specs/2026-07-18-multiraft-design.md](docs/specs/2026-07-18-multiraft-design.md) | Design |
-| [docs/wiki/en/Home.md](docs/wiki/en/Home.md) | Wiki |
+| [docs/README.md](docs/README.md) · [中文](docs/README.zh-CN.md) | Index (EN \| 中文 columns) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [中文](docs/ARCHITECTURE.zh-CN.md) | Crate boundaries |
+| [docs/specs/2026-07-18-multiraft-design.md](docs/specs/2026-07-18-multiraft-design.md) · [中文](docs/specs/2026-07-18-multiraft-design.zh-CN.md) | Design |
+| [docs/wiki/en/Home.md](docs/wiki/en/Home.md) · [中文](docs/wiki/zh/Home.md) | Wiki |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [中文](CONTRIBUTING.zh-CN.md) | How to contribute |
+| [SUPPORT.md](SUPPORT.md) · [中文](SUPPORT.zh-CN.md) | Help channels |
+| [SECURITY.md](SECURITY.md) · [中文](SECURITY.zh-CN.md) | Vulnerability reporting |
