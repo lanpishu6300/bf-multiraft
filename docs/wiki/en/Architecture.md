@@ -2,7 +2,7 @@
 
 **中文：** [zh/Architecture.md](../zh/Architecture.md)
 
-Full notes: [docs/ARCHITECTURE.md](../../ARCHITECTURE.md)
+Full notes: [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) · [中文](../../ARCHITECTURE.zh-CN.md)
 
 ## Positioning
 
@@ -39,7 +39,7 @@ Admin HTTP (per node)     Raft gRPC (shared, O(nodes))
 | `read_linearizable` | Linearizable read (ReadIndex) |
 | `with_fsm` | Local / may be stale (debug only) |
 
-No cross-group transactions. See [Consistency & testing](./Consistency.md) · [jepsen.md](../../jepsen.md).
+No cross-group transactions. See [Consistency & testing](./Consistency.md) · [jepsen.md](../../jepsen.md) · [中文](../../jepsen.zh-CN.md).
 
 ## Phase-2 integration (target)
 
@@ -51,6 +51,6 @@ match-contract (Leader-only RMQ)
 
 ## Related designs
 
-- [Design spec](../../specs/2026-07-18-multiraft-design.md)
-- [Implementation plan](../../plans/2026-07-18-multiraft.md)
-- [gRPC plan](../../plans/2026-07-18-multiraft-grpc.md)
+- [Design spec](../../specs/2026-07-18-multiraft-design.md) · [中文](../../specs/2026-07-18-multiraft-design.zh-CN.md)
+- [Implementation plan](../../plans/2026-07-18-multiraft.md) · [中文](../../plans/2026-07-18-multiraft.zh-CN.md)
+- [gRPC plan](../../plans/2026-07-18-multiraft-grpc.md) · [中文](../../plans/2026-07-18-multiraft-grpc.zh-CN.md)

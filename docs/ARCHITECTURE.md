@@ -1,5 +1,7 @@
 # Architecture notes
 
+**中文：** [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)
+
 Thin Multi-Raft runtime for matching HA. One Raft group per trading symbol
 (`GroupId`); shared peer connections; pluggable FSM. Built on
 `openraft` + `openraft-multi` (pinned).
@@ -71,8 +73,8 @@ Phase-1 demo injects `propose` locally (`POST /groups/{id}/inc` or background lo
 
 Failed / timed-out `propose` is **indeterminate** — retry with the same idempotency key.
 
-Details: [specs/2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) §4.3.1,
-[jepsen.md](./jepsen.md).
+Details: [specs/2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) · [中文](./specs/2026-07-18-multiraft-design.zh-CN.md) §4.3.1,
+[jepsen.md](./jepsen.md) · [中文](./jepsen.zh-CN.md).
 
 ## Integration with downstream matching engine (phase 2)
 
@@ -89,4 +91,4 @@ match-contract (RMQ consumer, Leader only)
 | `openraft` | `=0.10.0-alpha.30` |
 | `openraft-multi` | `=0.10.0-alpha.30` |
 
-See [upstream.md](./upstream.md).
+See [upstream.md](./upstream.md) · [中文](./upstream.zh-CN.md).

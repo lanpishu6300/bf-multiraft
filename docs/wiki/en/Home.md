@@ -17,8 +17,8 @@ Welcome. This in-repo wiki mirrors what many projects put on GitHub Wiki, and st
 
 ## Quick links
 
-- [Architecture notes](../../ARCHITECTURE.md)
-- [Design spec](../../specs/2026-07-18-multiraft-design.md)
-- [Jepsen / consistency](../../jepsen.md)
-- [Chaos checklist](../../chaos-checklist.md)
-- [Docs index](../../README.md)
+- [Architecture notes](../../ARCHITECTURE.md) · [中文](../../ARCHITECTURE.zh-CN.md)
+- [Design spec](../../specs/2026-07-18-multiraft-design.md) · [中文](../../specs/2026-07-18-multiraft-design.zh-CN.md)
+- [Jepsen / consistency](../../jepsen.md) · [中文](../../jepsen.zh-CN.md)
+- [Chaos checklist](../../chaos-checklist.md) · [中文](../../chaos-checklist.zh-CN.md)
+- [Docs index](../../README.md) · [中文](../../README.zh-CN.md)

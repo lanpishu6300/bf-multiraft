@@ -2,7 +2,7 @@
 
 **English：** [en/Architecture.md](../en/Architecture.md)
 
-完整说明见：[docs/ARCHITECTURE.md](../../ARCHITECTURE.md)
+完整说明见：[docs/ARCHITECTURE.zh-CN.md](../../ARCHITECTURE.zh-CN.md) · [English](../../ARCHITECTURE.md)
 
 ## 定位
 
@@ -39,7 +39,7 @@ Admin HTTP（每节点）     Raft gRPC（共享连接，O(nodes)）
 | `read_linearizable` | Linearizable 读（ReadIndex） |
 | `with_fsm` | 本地 / 可能 stale（仅调试） |
 
-组间**无事务**。详见 [一致性与测试](./Consistency.md) · [jepsen.md](../../jepsen.md)。
+组间**无事务**。详见 [一致性与测试](./Consistency.md) · [jepsen.zh-CN.md](../../jepsen.zh-CN.md) · [English](../../jepsen.md)。
 
 ## 二期集成（目标）
 
@@ -51,6 +51,6 @@ match-contract（仅 Leader 消费 RMQ）
 
 ## 相关设计
 
-- [薄 Multi-Raft 设计](../../specs/2026-07-18-multiraft-design.md)
-- [实现计划](../../plans/2026-07-18-multiraft.md)
-- [gRPC 跨进程计划](../../plans/2026-07-18-multiraft-grpc.md)
+- [薄 Multi-Raft 设计](../../specs/2026-07-18-multiraft-design.zh-CN.md) · [English](../../specs/2026-07-18-multiraft-design.md)
+- [实现计划](../../plans/2026-07-18-multiraft.zh-CN.md) · [English](../../plans/2026-07-18-multiraft.md)
+- [gRPC 跨进程计划](../../plans/2026-07-18-multiraft-grpc.zh-CN.md) · [English](../../plans/2026-07-18-multiraft-grpc.md)

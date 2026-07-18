@@ -1,5 +1,7 @@
 # Jepsen & porcupine
 
+**中文：** [jepsen.zh-CN.md](./jepsen.zh-CN.md)
+
 This note describes the **Consistency Contract** for multiraft groups, the
 in-process porcupine linearizability test, and the **local Jepsen** suite under
 `jepsen/multiraft/`.
@@ -69,7 +71,7 @@ Env knobs: `BASE_PORT`, `GROUPS`, `NODES`, `DATA_DIR`, `JEPSEN_TIME_LIMIT`, `JEP
 - **Nemesis:** local `kill -9` of `.jepsen-data/node-$id.pid`, restart via absolute `target/debug/multiraft-demo --no-auto-propose`
 - **SSH:** `{:dummy? true}` — no remote VMs
 
-Project layout: [jepsen/multiraft/README.md](../jepsen/multiraft/README.md).
+Project layout: [jepsen/multiraft/README.md](../jepsen/multiraft/README.md) · [中文](../jepsen/multiraft/README.zh-CN.md).
 
 Reports land under `jepsen/multiraft/store/latest/` (`results.edn`, `history.edn`,
 `timeline.html`) and are gitignored — re-run to regenerate.

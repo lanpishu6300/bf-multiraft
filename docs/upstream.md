@@ -1,5 +1,7 @@
 # Upstream pin note
 
+**中文：** [upstream.zh-CN.md](./upstream.zh-CN.md)
+
 ## Locked versions
 
 Workspace `Cargo.toml` pins:

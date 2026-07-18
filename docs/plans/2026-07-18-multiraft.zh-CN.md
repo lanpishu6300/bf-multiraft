@@ -1,20 +1,21 @@
-# multiraft Implementation Plan
+# multiraft 实现计划
 
-**中文：** [2026-07-18-multiraft.zh-CN.md](./2026-07-18-multiraft.zh-CN.md)
+**English：** [2026-07-18-multiraft.md](./2026-07-18-multiraft.md)
 
+> **说明：** 英文版为 agent 执行的规范来源（canonical）；本中文版供人工阅读。  
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver independent repo `multiraft`: openraft + openraft-multi thin Multi-Raft runtime with ≥10 groups, shared connections, 3-node failover that does not lose committed commands.
+**目标：** 交付独立仓库 `multiraft`：基于 openraft + openraft-multi 的薄 Multi-Raft 运行时，≥10 Group、共享连接、3 节点切主且不丢失已 commit 命令。
 
-**Architecture:** One openraft instance per `GroupId`; shared `GroupRouter` for peer RPC; pluggable `StateMachine` trait; static 3-node membership. Phase-1 demo injects proposes locally (no RMQ). Reference implementation pattern: [openraft `examples/multi-raft-kv`](https://github.com/databendlabs/openraft/tree/main/examples/multi-raft-kv).
+**架构：** 每个 `GroupId` 一个 openraft 实例；共享 `GroupRouter` 做 peer RPC；可插拔 `StateMachine` trait；静态 3 节点成员。一期 Demo 本地注入 propose（无 RMQ）。参考实现模式：[openraft `examples/multi-raft-kv`](https://github.com/databendlabs/openraft/tree/main/examples/multi-raft-kv)。
 
-**Tech Stack:** Rust 2021, Tokio, `openraft` + `openraft-multi` **pinned to `0.10.0-alpha.30`** (must match), serde, tonic or in-process router for tests, tracing.
+**技术栈：** Rust 2021, Tokio, `openraft` + `openraft-multi` **钉在 `0.10.0-alpha.30`**（必须一致）, serde, tonic 或测试用进程内 router, tracing。
 
-**Spec:** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
+**规格：** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
 
-**Workdir:** `/Users/lan//multiraft` (new git repo). Always `export PATH="$HOME/.cargo/bin:$PATH"`.
+**工作目录：** `/Users/lan//multiraft`（新 git 仓库）。始终 `export PATH="$HOME/.cargo/bin:$PATH"`。
 
-**Upstream reference (clone once for reading, do not vendor whole TiKV):**
+**上游参考（只克隆阅读，不要整仓 vendor TiKV）：**
 ```bash
 git clone --depth 1 --branch v0.10.0-alpha.30 \
   https://github.com/databendlabs/openraft.git /tmp/openraft-0.10.0-alpha.30
@@ -23,7 +24,7 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 
 ---
 
-## File map
+## 文件映射
 
 | Path | Responsibility |
 |------|----------------|
@@ -39,16 +40,16 @@ git clone --depth 1 --branch v0.10.0-alpha.30 \
 
 ---
 
-### Task 1: Scaffold independent repo + workspace
+### Task 1: 搭建独立仓库 + workspace
 
-**Files:**
+**文件：**
 - Create: `/Users/lan//multiraft/Cargo.toml`
 - Create: `/Users/lan//multiraft/README.md`
 - Create: `/Users/lan//multiraft/.gitignore`
 - Create: `/Users/lan//multiraft/crates/multiraft-fsm/{Cargo.toml,src/lib.rs}`
 - Create: `/Users/lan//multiraft/docs/specs/2026-07-18-multiraft-design.md` (copy from  docs)
 
-- [ ] **Step 1: Init git repo and ignore target**
+- [ ] **Step 1: 初始化 git 仓库并忽略 target**
 
 ```bash
 mkdir -p /Users/lan//multiraft
@@ -89,9 +90,9 @@ async-trait = "0.1"
 anyhow = "1"
 ```
 
-> If crates.io alpha resolution fails, use git deps pointed at tag `v0.10.0-alpha.30` for both crates (same commit).
+> 若 crates.io alpha 解析失败，对两个 crate 使用指向 tag `v0.10.0-alpha.30` 的 git 依赖（同一 commit）。
 
-- [ ] **Step 3: Stub `multiraft-fsm` only (other crates in later tasks)**
+- [ ] **Step 3: 仅 stub `multiraft-fsm`（其余 crate 在后续 Task）**
 
 ```toml
 # crates/multiraft-fsm/Cargo.toml
@@ -132,9 +133,9 @@ pub trait StateMachine: Send + 'static {
 }
 ```
 
-Temporarily comment out non-existent members in workspace `members` until Task 2–5 create them, **or** create empty stub crates with `pub fn stub() {}` so `cargo check` works.
+暂时在 workspace `members` 中注释掉尚未存在的成员，直到 Task 2–5 创建它们，**或**创建带 `pub fn stub() {}` 的空 stub crate，以便 `cargo check` 可通过。
 
-- [ ] **Step 4: Copy spec + README skeleton**
+- [ ] **Step 4: 复制规格 + README 骨架**
 
 ```bash
 mkdir -p docs/specs
@@ -156,7 +157,7 @@ cargo test --workspace
 ```
 ```
 
-- [ ] **Step 5: Verify + commit**
+- [ ] **Step 5: 验证并提交**
 
 ```bash
 cd /Users/lan//multiraft
@@ -171,14 +172,14 @@ EOF
 
 ---
 
-### Task 2: Demo FSM with idempotency (TDD)
+### Task 2: 带幂等的 Demo FSM（TDD）
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-fsm/src/counter_fsm.rs`
 - Modify: `crates/multiraft-fsm/src/lib.rs`
 - Create: `crates/multiraft-fsm/tests/counter_fsm.rs`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: 编写会失败的测试**
 
 ```rust
 // crates/multiraft-fsm/tests/counter_fsm.rs
@@ -209,15 +210,15 @@ fn snapshot_restore_roundtrip() {
 }
 ```
 
-- [ ] **Step 2: Run tests — expect FAIL**
+- [ ] **Step 2: 跑测试 — 期望 FAIL**
 
 ```bash
 cargo test -p multiraft-fsm --test counter_fsm
 ```
 
-Expected: compile error `CounterFsm` not found.
+期望：编译错误 `CounterFsm` not found。
 
-- [ ] **Step 3: Implement `CounterFsm`**
+- [ ] **Step 3: 实现 `CounterFsm`**
 
 ```rust
 // crates/multiraft-fsm/src/counter_fsm.rs
@@ -296,15 +297,15 @@ impl StateMachine for CounterFsm {
 }
 ```
 
-Add to `lib.rs`: `mod counter_fsm; pub use counter_fsm::CounterFsm;` and deps `serde`, `serde_json` in `multiraft-fsm/Cargo.toml`.
+在 `lib.rs` 中加入：`mod counter_fsm; pub use counter_fsm::CounterFsm;`，并在 `multiraft-fsm/Cargo.toml` 增加依赖 `serde`、`serde_json`。
 
-- [ ] **Step 4: Run tests — expect PASS**
+- [ ] **Step 4: 跑测试 — 期望 PASS**
 
 ```bash
 cargo test -p multiraft-fsm --test counter_fsm
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add crates/multiraft-fsm
@@ -317,24 +318,24 @@ EOF
 
 ---
 
-### Task 3: Adapt openraft TypeConfig + memory store from upstream example
+### Task 3: 从上游示例适配 openraft TypeConfig + 内存 store
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-store/` (full crate)
 - Create: `crates/multiraft-core/src/type_config.rs` (or under store)
 
-**Procedure (do not invent OpenRaft 0.10 traits from memory):**
+**步骤（不要凭记忆发明 OpenRaft 0.10 trait）：**
 
-- [ ] **Step 1: Clone reference at pinned tag** (see Workdir section).
+- [ ] **Step 1: 在锁定 tag 克隆参考**（见工作目录一节）。
 
-- [ ] **Step 2: Copy/adapt these files from `examples/multi-raft-kv` + shared example crates (`log-mem`, `sm-mem`, `types-kv`) into `multiraft-store` / `multiraft-core`:**
+- [ ] **Step 2: 从 `examples/multi-raft-kv` 与共享示例 crates（`log-mem`、`sm-mem`、`types-kv`）复制/适配到 `multiraft-store` / `multiraft-core`：**
   - Type aliases / `RaftTypeConfig` impl → `crates/multiraft-core/src/type_config.rs`
   - In-memory log storage → `crates/multiraft-store/src/log_mem.rs`
   - State machine bridge that calls `multiraft_fsm::StateMachine` → `crates/multiraft-store/src/sm_bridge.rs`
 
-Rename groups from string `"users"` to `GroupId: u64`. Keep openraft trait impls compiling against `=0.10.0-alpha.30`.
+将 Group 从字符串 `"users"` 重命名为 `GroupId: u64`。保持 openraft trait impl 能在 `=0.10.0-alpha.30` 下编译。
 
-- [ ] **Step 3: Unit smoke test — single group mem cluster (1 node) client_write**
+- [ ] **Step 3: 单元冒烟 — 单 Group 内存集群（1 节点）client_write**
 
 ```rust
 // crates/multiraft-store/tests/single_node_write.rs
@@ -342,11 +343,11 @@ Rename groups from string `"users"` to `GroupId: u64`. Keep openraft trait impls
 // Assert: after client_write, CounterFsm value == expected.
 ```
 
-Exact bootstrap code must be transcribed from upstream `tests/cluster/test_cluster.rs` (API names change between alphas — copy from the pinned tag, then rename).
+精确 bootstrap 代码必须从上游 `tests/cluster/test_cluster.rs` 转录（API 名随 alpha 变化 — 从锁定 tag 复制后再重命名）。
 
 - [ ] **Step 4: `cargo test -p multiraft-store` PASS**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -358,13 +359,13 @@ EOF
 
 ---
 
-### Task 4: Shared network router + connection counting
+### Task 4: 共享网络 router + 连接计数
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-net/src/{lib.rs,router.rs,conn_metrics.rs}`
 - Adapt from: upstream `examples/multi-raft-kv/src/{router.rs,network.rs}`
 
-- [ ] **Step 1: Write test for connection cardinality**
+- [ ] **Step 1: 编写连接基数测试**
 
 ```rust
 // crates/multiraft-net/tests/shared_connections.rs
@@ -376,21 +377,21 @@ async fn peer_connections_are_o_nodes_not_o_groups() {
 }
 ```
 
-Implement `Router::unique_peer_links()` as count of distinct peer node ids with an open channel (increment on first connect to peer, never per group).
+实现 `Router::unique_peer_links()`：统计有打开 channel 的 distinct peer node id（首次连到 peer 时递增，绝不按 Group 递增）。
 
-- [ ] **Step 2: Implement `GroupRouter` wrapping shared channels**
+- [ ] **Step 2: 实现包装共享 channel 的 `GroupRouter`**
 
-Use `openraft_multi::{GroupRouter, GroupNetworkAdapter, GroupNetworkFactory}` as in crate README. Route key = `(target_node_id, group_id)`.
+按 crate README 使用 `openraft_multi::{GroupRouter, GroupNetworkAdapter, GroupNetworkFactory}`。路由键 = `(target_node_id, group_id)`。
 
-For **phase-1 tests**, prefer the example’s in-process `Router` (channels) over tonic — faster CI. Optional tonic behind feature `net-tonic` later.
+**一期测试**优先用示例的进程内 `Router`（channels），而不是 tonic — CI 更快。可选 tonic 放在 feature `net-tonic` 后面做。
 
-- [ ] **Step 3: Run test — PASS**
+- [ ] **Step 3: 跑测试 — PASS**
 
 ```bash
 cargo test -p multiraft-net --test shared_connections
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -402,12 +403,12 @@ EOF
 
 ---
 
-### Task 5: `MultiRaft` public API
+### Task 5: `MultiRaft` 公共 API
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-core/src/{lib.rs,config.rs,multiraft.rs,error.rs}`
 
-- [ ] **Step 1: Define API surface matching the spec**
+- [ ] **Step 1: 按规格定义 API 表面**
 
 ```rust
 // crates/multiraft-core/src/config.rs
@@ -462,7 +463,7 @@ impl MultiRaft {
 }
 ```
 
-- [ ] **Step 2: Failing integration test for NotLeader**
+- [ ] **Step 2: 编写会失败的 NotLeader 集成测试**
 
 ```rust
 // crates/multiraft-core/tests/not_leader.rs
@@ -473,11 +474,11 @@ async fn propose_on_follower_returns_not_leader() {
 }
 ```
 
-- [ ] **Step 3: Implement `propose` via openraft `Raft::client_write` / write API from pinned example; map non-leader errors to `NotLeader`.**
+- [ ] **Step 3: 通过 openraft `Raft::client_write` / 锁定示例的写 API 实现 `propose`；将非 Leader 错误映射为 `NotLeader`。**
 
-- [ ] **Step 4: Wire `on_leader_change` by watching openraft metrics (`RaftMetrics` / equivalent in 0.10) per group.**
+- [ ] **Step 4: 通过观察每 Group 的 openraft metrics（`RaftMetrics` / 0.10 等价物）接线 `on_leader_change`。**
 
-- [ ] **Step 5: Tests PASS + commit**
+- [ ] **Step 5: 测试 PASS + 提交**
 
 ```bash
 cargo test -p multiraft-core
@@ -490,13 +491,13 @@ EOF
 
 ---
 
-### Task 6: File-backed persistence + restart recovery
+### Task 6: 文件持久化 + 重启恢复
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-store/src/log_file.rs` (or adapt openraft file example if present)
 - Modify: `ClusterConfig.data_dir` usage in `MultiRaft::start`
 
-- [ ] **Step 1: Test**
+- [ ] **Step 1: 测试**
 
 ```rust
 // crates/multiraft-store/tests/restart_recover.rs
@@ -507,11 +508,11 @@ async fn restart_replays_committed_state() {
 }
 ```
 
-- [ ] **Step 2: Implement durable log under `{data_dir}/group-{id}/`**
+- [ ] **Step 2: 在 `{data_dir}/group-{id}/` 下实现持久 log**
 
-Minimum: persist raft log entries + hard state so restart does not empty FSM. Snapshot optional for this task if log replay alone passes the test.
+最低要求：持久化 raft log entries + hard state，使重启不会清空 FSM。若仅靠 log replay 就能通过测试，本 Task 快照可选。
 
-- [ ] **Step 3: PASS + commit**
+- [ ] **Step 3: PASS + 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -523,22 +524,22 @@ EOF
 
 ---
 
-### Task 7: `multiraft-demo` — 3 nodes × 10 groups
+### Task 7: `multiraft-demo` — 3 节点 × 10 Group
 
-**Files:**
+**文件：**
 - Create: `crates/multiraft-demo/src/main.rs`
 - Create: `crates/multiraft-demo/Cargo.toml`
 - Create: `scripts/run_demo_cluster.sh`
 
-- [ ] **Step 1: Binary accepts `--node-id`, `--base-port`, `--groups 10`**
+- [ ] **Step 1: 二进制接受 `--node-id`、`--base-port`、`--groups 10`**
 
-Each process:
+每个进程：
 1. `MultiRaft::start`
-2. `create_group` for `0..groups`
-3. Loop: if `is_leader(g)`, `propose` counter cmds with unique idem keys
-4. Every 2s print per-group value + leader
+2. 对 `0..groups` 调用 `create_group`
+3. 循环：若 `is_leader(g)`，用唯一幂等键 `propose` 计数命令
+4. 每 2s 打印每 Group 的 value + leader
 
-- [ ] **Step 2: Script starts 3 processes on ports `base`, `base+1`, `base+2`**
+- [ ] **Step 2: 脚本在端口 `base`、`base+1`、`base+2` 启动 3 个进程**
 
 ```bash
 # scripts/run_demo_cluster.sh
@@ -560,9 +561,9 @@ done
 echo "cluster started; logs under $DATA"
 ```
 
-- [ ] **Step 3: Manual smoke — 30s run, logs show 10 groups with leaders and increasing counters**
+- [ ] **Step 3: 手工冒烟 — 跑 30s，日志显示 10 个 Group 有 Leader 且计数器增长**
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -574,13 +575,13 @@ EOF
 
 ---
 
-### Task 8: Acceptance automation (spec §5.2)
+### Task 8: 验收自动化（规格 §5.2）
 
-**Files:**
+**文件：**
 - Create: `scripts/acceptance.sh`
 - Create: `crates/multiraft-demo/tests/acceptance.rs` (or script-driven)
 
-Cover all six criteria:
+覆盖全部六条标准：
 
 | # | Automation |
 |---|------------|
@@ -591,9 +592,9 @@ Cover all six criteria:
 | 5 | Restart killed node; wait until caught up |
 | 6 | Unit/integration `not_leader` from Task 5 |
 
-- [ ] **Step 1: Add minimal admin query on demo** — e.g. localhost HTTP `GET /groups/{id}/value` and `GET /metrics/links` so scripts can assert without scraping logs.
+- [ ] **Step 1: 为 Demo 增加最小 Admin 查询** — 例如本机 HTTP `GET /groups/{id}/value` 与 `GET /metrics/links`，便于脚本断言而无需刮日志。
 
-- [ ] **Step 2: Write `scripts/acceptance.sh` that exits 0 only if all checks pass**
+- [ ] **Step 2: 编写 `scripts/acceptance.sh`，仅当全部检查通过时 exit 0**
 
 ```bash
 # Key fragments
@@ -608,16 +609,16 @@ kill "$(cat .demo-data/node-$LEADER.pid)"
 # verify catch-up
 ```
 
-- [ ] **Step 3: Run acceptance — PASS**
+- [ ] **Step 3: 跑验收 — PASS**
 
 ```bash
 chmod +x scripts/*.sh
 ./scripts/acceptance.sh
 ```
 
-Expected: exit code 0; prints `ACCEPTANCE OK`.
+期望：exit code 0；打印 `ACCEPTANCE OK`。
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -629,20 +630,20 @@ EOF
 
 ---
 
-### Task 9: Docs polish + pin note
+### Task 9: 文档润色 + 锁定说明
 
-**Files:**
+**文件：**
 - Modify: `README.md`
 - Modify:  spec status → Approved / Implemented-phase1 when done
 - Create: `multiraft/docs/upstream.md`
 
-- [ ] **Step 1: Document pinned versions, how to run acceptance, relation to `downstream matching engine` (phase 2 out of scope)**
+- [ ] **Step 1: 记录锁定版本、如何跑 acceptance、与 `downstream matching engine` 的关系（二期不在本计划范围）**
 
-- [ ] **Step 2: Update `/Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md` status line to `Approved — 2026-07-18` (implementation status separate).
+- [ ] **Step 2: 将 `/Users/lan//docs/superpowers/specs/2026-07-18-multiraft-design.md` 状态行更新为 `Approved — 2026-07-18`（实现状态另记）。**
 
-- [ ] **Step 3: Final `cargo test --workspace` + `./scripts/acceptance.sh`**
+- [ ] **Step 3: 最终 `cargo test --workspace` + `./scripts/acceptance.sh`**
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 提交**
 
 ```bash
 git commit -am "$(cat <<'EOF'
@@ -654,7 +655,7 @@ EOF
 
 ---
 
-## Spec coverage checklist
+## Spec 覆盖检查清单
 
 | Spec item | Task |
 |-----------|------|
@@ -669,9 +670,9 @@ EOF
 | No dynamic membership / no TiKV fork | enforced by scope |
 | Phase-2 match-contract | explicitly out of this plan |
 
-## Placeholder / consistency self-review
+## 占位 / 一致性自检
 
-- Versions locked to `0.10.0-alpha.30` everywhere.
-- `GroupId` / `NodeId` = `u64` consistent with FSM crate.
-- OpenRaft trait bodies are **adapted from pinned upstream example**, not hand-waved — Task 3 explicitly requires transcription from `/tmp/openraft-0.10.0-alpha.30/examples/multi-raft-kv`.
-- No RMQ code in phase-1 tasks (matches spec range note).
+- 各处版本锁定为 `0.10.0-alpha.30`。
+- `GroupId` / `NodeId` = `u64`，与 FSM crate 一致。
+- OpenRaft trait 体**改编自锁定上游示例**，不可凭空手写 — Task 3 明确要求从 `/tmp/openraft-0.10.0-alpha.30/examples/multi-raft-kv` 转录。
+- 一期任务中无 RMQ 代码（与规格范围说明一致）。

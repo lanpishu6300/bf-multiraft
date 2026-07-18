@@ -1,5 +1,7 @@
 # Jepsen: multiraft (local)
 
+**中文：** [README.zh-CN.md](./README.zh-CN.md)
+
 Local Jepsen suite against the multi-process `multiraft-demo` admin HTTP API.
 No remote SSH VMs — nodes are OS processes on `127.0.0.1`.
 
