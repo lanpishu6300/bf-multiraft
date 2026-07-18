@@ -33,7 +33,7 @@
                         (fn [] {:type :invoke :f :add :value 1})])
    :checker   (checker/counter)})
 
-(defn bf-test
+(defn mr-test
   "Construct a local (dummy SSH) Jepsen test map.
 
   Cluster lifecycle is owned by scripts/run_jepsen.sh (JEPSEN=1 /
@@ -88,6 +88,6 @@
   [& args]
   (info "multiraft Jepsen starting" args)
   (cli/run!
-   (merge (cli/single-test-cmd {:test-fn bf-test})
+   (merge (cli/single-test-cmd {:test-fn mr-test})
           (cli/serve-cmd))
    args))
