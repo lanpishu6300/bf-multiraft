@@ -1,20 +1,21 @@
-# multiraft Cross-Process gRPC Transport Plan
+# multiraft 跨进程 gRPC 传输计划
 
-**中文：** [2026-07-18-multiraft-grpc.zh-CN.md](./2026-07-18-multiraft-grpc.zh-CN.md)
+**English：** [2026-07-18-multiraft-grpc.md](./2026-07-18-multiraft-grpc.md)
 
+> **说明：** 英文版为 agent 执行的规范来源；本中文版供人工阅读。  
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Replace single-process-only demo networking with tonic/gRPC so 3 OS processes form a Multi-Raft cluster; acceptance kills a real leader PID.
+**目标：** 将仅单进程可用的 Demo 网络替换为 tonic/gRPC，使 3 个 OS 进程组成 Multi-Raft 集群；验收时杀掉真实 Leader PID。
 
-**Architecture:** Keep in-process `Router` for unit tests. Add `GrpcGroupRouter` + tonic server that demuxes by `group_id`. Demo `--mode node` binds Raft RPC + admin HTTP; `run_demo_cluster.sh` starts 3 processes. Acceptance uses `kill $LEADER_PID`.
+**架构：** 单元测试保留进程内 `Router`。新增 `GrpcGroupRouter` + 按 `group_id` 解复用的 tonic server。Demo `--mode node` 绑定 Raft RPC + Admin HTTP；`run_demo_cluster.sh` 启动 3 个进程。Acceptance 使用 `kill $LEADER_PID`。
 
-**Tech Stack:** tonic, prost, tokio, existing openraft-multi `GroupRouter`, openraft `=0.10.0-alpha.30`
+**技术栈：** tonic, prost, tokio, 既有 openraft-multi `GroupRouter`, openraft `=0.10.0-alpha.30`
 
-**Workdir:** `/Users/lan//multiraft`
+**工作目录：** `/Users/lan//multiraft`
 
 ---
 
-## File map
+## 文件映射
 
 | Path | Responsibility |
 |------|----------------|
@@ -27,7 +28,7 @@
 
 ---
 
-### Task 1: Proto + tonic GroupRouter skeleton
+### Task 1: Proto + tonic GroupRouter 骨架
 
 - [ ] Add tonic/prost build deps; define proto with `group_id` on each RPC
 - [ ] Implement `GrpcGroupRouter` implementing `openraft_multi::GroupRouter`
@@ -35,7 +36,7 @@
 - [ ] Unit test: 2 fake servers, 10 groups, assert link count == 2 (or 1 directed as designed)
 - [ ] Commit: `feat(net): add tonic GrpcGroupRouter skeleton`
 
-### Task 2: Wire MultiRaft::start for remote peers
+### Task 2: 为远程 peers 接线 MultiRaft::start
 
 - [ ] `MultiRaft::start(config)` starts local node + tonic server on `peers[self].addr`
 - [ ] Outbound `GrpcGroupRouter` to other peer addrs
@@ -43,7 +44,7 @@
 - [ ] Integration test: spawn 3 tokio tasks each with real TCP tonic (or 3 threads), 1 group write
 - [ ] Commit: `feat(net): MultiRaft gRPC cross-process start`
 
-### Task 3: Demo multi-process mode
+### Task 3: Demo 多进程模式
 
 - [ ] `--mode node` works with `--node-id` / `--base-port` / `--groups` / `--data-dir`
 - [ ] Admin HTTP per process (value, links, optional inject)
@@ -51,7 +52,7 @@
 - [ ] Smoke 30s: 10 groups advance
 - [ ] Commit: `feat(demo): multi-process gRPC cluster launcher`
 
-### Task 4: Acceptance kill-PID
+### Task 4: Acceptance 杀 PID
 
 - [ ] Update `acceptance.sh`: detect leader node via HTTP; `kill` that PID; wait new leaders; values durable; restart killed node
 - [ ] Keep checks 1,2,5,6; criterion 3 = OS kill
@@ -61,7 +62,7 @@
 
 ---
 
-## Spec coverage
+## Spec 覆盖
 
 | Item | Task |
 |------|------|

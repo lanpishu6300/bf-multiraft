@@ -29,7 +29,7 @@ multiraft-demo → multiraft-net (MultiRaft + 共享 gRPC)
                     └── multiraft-store
 ```
 
-完整说明：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Wiki [架构](docs/wiki/zh/Architecture.md)
+完整说明：[docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md) · [English](docs/ARCHITECTURE.md) · Wiki [架构](docs/wiki/zh/Architecture.md)
 
 ### 依赖锁定
 
@@ -38,7 +38,7 @@ multiraft-demo → multiraft-net (MultiRaft + 共享 gRPC)
 | `openraft` | `=0.10.0-alpha.30` |
 | `openraft-multi` | `=0.10.0-alpha.30` |
 
-见 [docs/upstream.md](docs/upstream.md)。
+见 [docs/upstream.zh-CN.md](docs/upstream.zh-CN.md) · [English](docs/upstream.md)。
 
 ---
 
@@ -62,7 +62,7 @@ cargo test --workspace
 | `read_linearizable` | Linearizable 读 |
 | `with_fsm` | 本地 / 可能 stale（仅调试） |
 
-详见 [docs/jepsen.md](docs/jepsen.md)。
+详见 [docs/jepsen.zh-CN.md](docs/jepsen.zh-CN.md) · [English](docs/jepsen.md)。
 
 ---
 
@@ -88,11 +88,16 @@ cargo test --workspace
 
 ---
 
-## 文档
+## 文档（双语）
+
+`docs/` 下运维与设计文档均成对提供英文 `foo.md` 与中文 `foo.zh-CN.md`（标题下有语言切换链接）。Wiki 已在 `docs/wiki/zh/` 与 `docs/wiki/en/` 双语维护。
 
 | 文档 | 说明 |
 |------|------|
-| [docs/README.md](docs/README.md) | 索引 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crate 边界 |
-| [设计规格](docs/specs/2026-07-18-multiraft-design.md) | 设计 |
-| [Wiki 首页](docs/wiki/zh/Home.md) | Wiki |
+| [docs/README.zh-CN.md](docs/README.zh-CN.md) · [English](docs/README.md) | 索引（EN \| 中文列） |
+| [docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md) · [English](docs/ARCHITECTURE.md) | Crate 边界 |
+| [设计规格（中文）](docs/specs/2026-07-18-multiraft-design.zh-CN.md) · [English](docs/specs/2026-07-18-multiraft-design.md) | 设计 |
+| [Wiki 首页](docs/wiki/zh/Home.md) · [English](docs/wiki/en/Home.md) | Wiki |
+| [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md) · [English](CONTRIBUTING.md) | 贡献指南 |
+| [SUPPORT.zh-CN.md](SUPPORT.zh-CN.md) · [English](SUPPORT.md) | 支持渠道 |
+| [SECURITY.zh-CN.md](SECURITY.zh-CN.md) · [English](SECURITY.md) | 安全报告 |

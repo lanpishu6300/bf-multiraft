@@ -7,6 +7,11 @@ Versioned wiki pages (GitHub Wiki alternative that stays in git).
 | English | [en/Home.md](./en/Home.md) |
 | 中文 | [zh/Home.md](./zh/Home.md) |
 
+Ops / design docs outside this wiki (`docs/ARCHITECTURE.md`, `docs/jepsen.md`,
+`docs/chaos-checklist.md`, specs, plans, etc.) are also bilingual:
+English `foo.md` + Chinese `foo.zh-CN.md`. See [docs/README.md](../README.md)
+· [中文索引](../README.zh-CN.md).
+
 ### Publishing to GitHub Wiki
 
 Source of truth is **this directory**. Sync to the Wiki tab:

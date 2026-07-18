@@ -17,8 +17,8 @@
 
 ## 快捷链接
 
-- [架构笔记](../../ARCHITECTURE.md)
-- [设计规格](../../specs/2026-07-18-multiraft-design.md)
-- [Jepsen / 一致性](../../jepsen.md)
-- [Chaos 清单](../../chaos-checklist.md)
-- [文档索引](../../README.md)
+- [架构笔记](../../ARCHITECTURE.zh-CN.md) · [English](../../ARCHITECTURE.md)
+- [设计规格](../../specs/2026-07-18-multiraft-design.zh-CN.md) · [English](../../specs/2026-07-18-multiraft-design.md)
+- [Jepsen / 一致性](../../jepsen.zh-CN.md) · [English](../../jepsen.md)
+- [Chaos 清单](../../chaos-checklist.zh-CN.md) · [English](../../chaos-checklist.md)
+- [文档索引](../../README.zh-CN.md) · [English](../../README.md)
