@@ -11,10 +11,10 @@
 - [x] Local Jepsen (counter + kill nemesis)
 - [x] Consistency Contract + `read_linearizable`
 
-## Phase-2 (`downstream matching engine`)
+## Phase-2 (downstream app)
 
-- [ ] Leader RMQ consume → `propose`
-- [ ] FSM adapter for `match-core` + idempotency keys
+- [ ] Optional Leader RMQ consume → `propose`
+- [ ] Pluggable matching engine FSM + idempotency keys
 - [ ] Production metrics (propose latency, lag, leadership changes)
 - [ ] Stronger persistence / snapshot policy
 

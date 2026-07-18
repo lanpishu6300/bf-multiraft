@@ -11,7 +11,6 @@
 | 设计 / 架构 | [docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md) · [English](docs/ARCHITECTURE.md)，[Wiki](docs/wiki/zh/Home.md) |
 | Bug / 功能请求 | [GitHub Issues](https://github.com/lanpishu6300/multiraft/issues) |
 | 安全问题 | 仅见 [SECURITY.md](SECURITY.md) · [中文](SECURITY.zh-CN.md) |
-| 姊妹撮合引擎 | [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine) |
 
 ## 开 Issue 前
 

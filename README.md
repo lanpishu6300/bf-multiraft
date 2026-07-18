@@ -1,12 +1,11 @@
 # multiraft
 
-Thin **Multi-Raft** library for matching matching HA — one Raft group per trading
-symbol, shared peer connections, pluggable FSM.
+Thin **Multi-Raft** library for matching HA — one Raft group per trading symbol,
+shared peer connections, pluggable FSM.
 
 Built on [openraft](https://github.com/databendlabs/openraft) + `openraft-multi`
-(exact pin). Companion to [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine);
-Phase-1 stops at the runtime + demo. RMQ Leader propose / real match FSM is Phase-2
-in that repo.
+(exact pin). Phase-1 stops at the runtime + demo. Phase-2 (optional, in a
+downstream app): RMQ Leader propose + a pluggable matching FSM.
 
 **License:** [Apache License 2.0](LICENSE)  
 **中文：** [README.zh-CN.md](README.zh-CN.md)  
@@ -132,11 +131,11 @@ Clean `target/` before large rebuilds if disk is tight.
 
 ---
 
-## Relation to downstream matching engine
+## Downstream integration (phase 2)
 
 ```text
 Phase-1 (this repo)     → runtime + demo + consistency tests
-Phase-2 (downstream matching engine) → RMQ Leader propose → FSM → match-core
+Phase-2 (downstream app) → optional RMQ Leader propose → pluggable matching FSM
 ```
 
 ---

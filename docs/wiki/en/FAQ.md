@@ -22,7 +22,8 @@ No. It may be stale. Use `read_linearizable` for production reads.
 After a run: `jepsen/multiraft/store/latest/` (gitignored). Case source lives
 under `jepsen/multiraft/src/`. More: [Consistency & testing](./Consistency.md).
 
-### Relation to downstream matching engine?
+### Downstream integration (phase 2)?
 
-Phase-1 is this independent runtime. Phase-2: `match-contract` depends on this
-crate for Leader-side propose.
+Phase-1 is this independent runtime. Phase-2 (optional, in a downstream app):
+a matching process / ingress shell can depend on this crate for Leader-side
+propose, with a pluggable matching engine FSM.

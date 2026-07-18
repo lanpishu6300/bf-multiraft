@@ -41,12 +41,12 @@ Admin HTTP（每节点）     Raft gRPC（共享连接，O(nodes)）
 
 组间**无事务**。详见 [一致性与测试](./Consistency.md) · [jepsen.zh-CN.md](../../jepsen.zh-CN.md) · [English](../../jepsen.md)。
 
-## 二期集成（目标）
+## 下游集成（二期，目标）
 
 ```text
-match-contract（仅 Leader 消费 RMQ）
+撮合进程 / 入站壳（仅 Leader 消费 RMQ）
   → multiraft propose
-  → FSM → match-core
+  → FSM → 撮合引擎 FSM
 ```
 
 ## 相关设计
