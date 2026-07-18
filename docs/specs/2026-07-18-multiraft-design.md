@@ -3,8 +3,8 @@
 **日期：** 2026-07-18  
 **状态：** Approved — 2026-07-18; Phase-1 + gRPC cross-process (Phase-1.5) implemented in multiraft  
 
-**关联：** [2026-07-17-rust-match-engines-design.md](./2026-07-17-rust-match-engines-design.md)  
-**代码根（拟）：** `/Users/lan//multiraft/`（独立 git 仓库）
+**关联：** [downstream matching engine](https://github.com/lanpishu6300/downstream matching engine) 撮合引擎设计；本仓架构见 [ARCHITECTURE.md](../ARCHITECTURE.md)  
+**代码根：** 本仓库 `multiraft`
 
 ---
 

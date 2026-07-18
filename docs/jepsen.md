@@ -71,6 +71,9 @@ Env knobs: `BASE_PORT`, `GROUPS`, `NODES`, `DATA_DIR`, `JEPSEN_TIME_LIMIT`, `JEP
 
 Project layout: [jepsen/multiraft/README.md](../jepsen/multiraft/README.md).
 
+Reports land under `jepsen/multiraft/store/latest/` (`results.edn`, `history.edn`,
+`timeline.html`) and are gitignored — re-run to regenerate.
+
 ### Java / Leiningen
 
 - Leiningen: install `lein` to `$HOME/bin` if missing (see repo scripts / Leiningen docs).
