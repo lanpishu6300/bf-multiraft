@@ -2,7 +2,7 @@
 
 Thin Multi-Raft library for matching HA, built on [openraft](https://github.com/datafuselabs/openraft) and `openraft-multi`.
 
-Independent Rust workspace (not part of `downstream matching engine`). Phase-1 delivers a single-process demo and acceptance suite; integrating RMQ Leader propose into matching is phase 2 and out of scope here.
+Independent Rust workspace (not part of `downstream matching engine`). Phase-1 delivers a multi-process gRPC demo and acceptance suite; integrating RMQ Leader propose into matching is phase 2 and out of scope here.
 
 ## Dependency pin
 
@@ -18,39 +18,49 @@ Exact pins (`=`) keep the alpha Multi-Raft API stable. See [docs/upstream.md](do
 | Crate | Role |
 | --- | --- |
 | `multiraft-core` | `TypeConfig`, `ClusterConfig`, `MultiRaftError` / `ProposeOk`, shared types |
-| `multiraft-net` | Shared `GroupRouter` + **`MultiRaft` facade** (`use multiraft_net::MultiRaft`) |
+| `multiraft-net` | Shared `GroupRouter` / `GrpcRouter` + **`MultiRaft` facade** (`use multiraft_net::MultiRaft`) |
 | `multiraft-fsm` | Pluggable state machine trait |
 | `multiraft-store` | File-backed Raft log / state for restart recovery |
-| `multiraft-demo` | 3 logical nodes × N groups `CounterFsm` demo + localhost admin |
+| `multiraft-demo` | 3-node × N groups `CounterFsm` demo + per-node admin HTTP |
 
-**Phase-1 topology:** one OS process hosts **3 logical nodes** and N Raft groups over an in-process shared `Router`. Multi-OS-process clustering needs a future TCP / tonic transport (not phase-1).
+**Topology:** `--mode node` runs one OS process per Raft node over tonic gRPC. `--mode cluster` keeps an in-process 3-logical-node harness for quick regression.
 
 ## Demo & acceptance
 
 ```bash
-# Build + launch (logs under .demo-data/)
+# Build + launch 3 OS processes (logs / pids under .demo-data/)
 ./scripts/run_demo_cluster.sh
 
-# Or run directly:
+# Or run one node directly:
 cargo run -p multiraft-demo -- \
-  --mode cluster --base-port 21000 --groups 10 --data-dir .demo-data
+  --mode node --node-id 1 --nodes 3 --base-port 21000 \
+  --groups 10 --data-dir .demo-data/node-1
 ```
 
-CLI flags: `--node-id`, `--base-port`, `--groups`, `--data-dir`, `--mode`, `--nodes`.
+With `--base-port 21000`:
 
-Every ~2s the process logs per-group `leader` + CounterFsm `value`. Admin HTTP:
+| Node | Raft gRPC | Admin HTTP |
+| --- | --- | --- |
+| 1 | `127.0.0.1:21000` | `http://127.0.0.1:21100` |
+| 2 | `127.0.0.1:21001` | `http://127.0.0.1:21101` |
+| 3 | `127.0.0.1:21002` | `http://127.0.0.1:21102` |
 
-- `GET http://127.0.0.1:<base-port>/groups/{id}/value`
-- `GET http://127.0.0.1:<base-port>/metrics/links`
-- `POST http://127.0.0.1:<base-port>/admin/shutdown_node/{id}` (acceptance failover)
+CLI flags: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`.
 
-Phase-1 acceptance (10 groups, simulate Leader loss, durability check):
+Admin endpoints (per process in `--mode node`):
+
+- `GET /groups/{id}/value` — local FSM value + leader
+- `GET /metrics/links` — `unique_peer_links()`
+
+In-process regression (`--mode cluster`) still exposes `POST /admin/shutdown_node/{id}`.
+
+Acceptance (10 groups, kill real leader PID, durability + catch-up):
 
 ```bash
 ./scripts/acceptance.sh
 ```
 
-Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANCE_DATA`.
+Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANCE_DATA`, `NODES`.
 
 ## Build & test
 
