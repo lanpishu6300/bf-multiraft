@@ -1,3 +1,4 @@
 /target
+.demo-data/
 **/*.rs.bk
 .DS_Store
