@@ -1,0 +1,10 @@
+[package]
+name = "multiraft-demo"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "multiraft-demo"
+path = "src/main.rs"
+
+[dependencies]

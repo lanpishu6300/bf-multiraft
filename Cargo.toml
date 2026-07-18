@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/multiraft-fsm",
+  "crates/multiraft-store",
+  "crates/multiraft-net",
+  "crates/multiraft-core",
+  "crates/multiraft-demo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+openraft = { version = "=0.10.0-alpha.30", default-features = false, features = ["serde", "type-alias"] }
+openraft-multi = { version = "=0.10.0-alpha.30" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+async-trait = "0.1"
+anyhow = "1"
