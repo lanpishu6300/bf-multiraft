@@ -67,7 +67,22 @@ Optional env: `BASE_PORT` (default `21000`), `GROUPS` (default `10`), `ACCEPTANC
 ```bash
 cargo test --workspace
 cargo test -p multiraft-net --test chaos_failover
-./scripts/chaos.sh   # optional longer chaos
+./scripts/chaos.sh   # optional multi-process chaos
+```
+
+Chaos coverage checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md).
+
+`scripts/chaos.sh` env:
+
+| Env | Default | Notes |
+| --- | --- | --- |
+| `SCENARIO` | `random` | `random` · `kill_leader` · `kill_follower` · `rolling` · `double_kill` · `all` |
+| `ROUNDS` | `5` | Per-scenario rounds (`rolling` = one full pass over nodes per round) |
+| `NODES` / `GROUPS` / `BASE_PORT` | `3` / `5` / `22000` | Same as acceptance, different default port |
+
+```bash
+SCENARIO=kill_leader ROUNDS=3 ./scripts/chaos.sh
+SCENARIO=all ROUNDS=1 ./scripts/chaos.sh
 ```
 
 Or run the bundled suite (unit + chaos_failover + acceptance; set `CHAOS=1` for `chaos.sh`):
