@@ -7,6 +7,9 @@
 //!
 //! - [`MultiRaft::start`] starts **one** node with its own [`Router`].
 //! - [`MultiRaft::start_cluster`] starts N nodes sharing one [`Router`] (preferred for tests).
+//! - [`SharedFabric`] exposes the shared [`Router`] + glue so chaos tests can
+//!   `shutdown` a node and [`SharedFabric::start_node`] it again with the same
+//!   `node_id` / `data_dir` / peers.
 //!
 //! # Cross-process (gRPC)
 //!
@@ -73,6 +76,36 @@ impl ClusterGlue {
     }
 }
 
+/// Shared in-process fabric: one [`Router`] + cluster glue for many nodes.
+///
+/// Use this when a test needs to restart a node after [`MultiRaft::shutdown`]
+/// without losing the peer mesh (unregister on shutdown; re-register on start).
+#[derive(Clone, Default)]
+pub struct SharedFabric {
+    router: Router,
+    glue: ClusterGlue,
+}
+
+impl SharedFabric {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn router(&self) -> &Router {
+        &self.router
+    }
+
+    pub async fn start_node(&self, config: ClusterConfig) -> anyhow::Result<MultiRaft> {
+        MultiRaft::start_inner(
+            config,
+            self.router.clone(),
+            self.glue.clone(),
+            |_| CounterFsm::new(),
+        )
+        .await
+    }
+}
+
 enum NetBackend {
     InProcess {
         router: Router,
@@ -105,15 +138,12 @@ impl MultiRaft<CounterFsm> {
     /// Start N nodes sharing one [`Router`] (in-process multi-node harness).
     ///
     /// `SocketAddr` peers in each config are unused; nodes are linked via the shared router.
+    /// Internally uses [`SharedFabric`]; prefer that type when tests need node restart.
     pub async fn start_cluster(configs: Vec<ClusterConfig>) -> anyhow::Result<Vec<Self>> {
-        let router = Router::new();
-        let glue = ClusterGlue::default();
+        let fabric = SharedFabric::new();
         let mut nodes = Vec::with_capacity(configs.len());
         for config in configs {
-            nodes.push(
-                Self::start_inner(config, router.clone(), glue.clone(), |_| CounterFsm::new())
-                    .await?,
-            );
+            nodes.push(fabric.start_node(config).await?);
         }
         Ok(nodes)
     }

@@ -19,6 +19,7 @@ pub use conn_metrics::ConnMetrics;
 pub use grpc::GrpcRouter;
 pub use grpc::GrpcServer;
 pub use multiraft::MultiRaft;
+pub use multiraft::SharedFabric;
 pub use multiraft::wait_for_leader;
 pub use network::GrpcNetworkFactory;
 pub use network::NetworkFactory;
