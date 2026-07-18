@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -25,10 +26,13 @@ use crate::router::NodeTx;
 use crate::router::Router;
 use multiraft_core::typ;
 
+/// Shared map of groups on a node (also used by [`crate::MultiRaft`] for dynamic create).
+pub type GroupMap<S> = Arc<Mutex<BTreeMap<GroupId, GroupApp<S>>>>;
+
 /// A node manages multiple Raft groups that share one inbound connection.
 pub struct Node<S: StateMachine> {
     pub node_id: NodeId,
-    pub groups: BTreeMap<GroupId, GroupApp<S>>,
+    pub groups: GroupMap<S>,
     pub rx: NodeRx,
     pub router: Router,
 }
@@ -40,7 +44,21 @@ impl<S: StateMachine> Node<S> {
 
         let node = Self {
             node_id,
-            groups: BTreeMap::new(),
+            groups: Arc::new(Mutex::new(BTreeMap::new())),
+            rx,
+            router,
+        };
+        (node, tx)
+    }
+
+    /// Construct a node that shares an externally owned group map (for MultiRaft).
+    pub fn with_groups(node_id: NodeId, router: Router, groups: GroupMap<S>) -> (Self, NodeTx) {
+        let (tx, rx) = mpsc::channel(1024);
+        router.register_node(node_id, tx.clone());
+
+        let node = Self {
+            node_id,
+            groups,
             rx,
             router,
         };
@@ -48,7 +66,7 @@ impl<S: StateMachine> Node<S> {
     }
 
     pub fn add_group(
-        &mut self,
+        &self,
         group_id: GroupId,
         raft: Raft<S>,
         state_machine: StateMachineStore<S>,
@@ -59,11 +77,15 @@ impl<S: StateMachine> Node<S> {
             raft,
             state_machine,
         };
-        self.groups.insert(group_id, app);
+        self.groups.lock().unwrap().insert(group_id, app);
     }
 
-    pub fn get_raft(&self, group_id: GroupId) -> Option<&Raft<S>> {
-        self.groups.get(&group_id).map(|g| &g.raft)
+    pub fn get_raft(&self, group_id: GroupId) -> Option<Raft<S>> {
+        self.groups
+            .lock()
+            .unwrap()
+            .get(&group_id)
+            .map(|g| g.raft.clone())
     }
 
     /// Dispatch inbound messages to the correct group by `group_id`.
@@ -78,21 +100,24 @@ impl<S: StateMachine> Node<S> {
                 response_tx,
             } = msg;
 
-            let group = match self.groups.get_mut(&group_id) {
-                Some(g) => g,
-                None => {
-                    let _ = response_tx.send(encode::<Result<(), typ::RaftError>>(Err(
-                        typ::RaftError::Fatal(openraft::error::Fatal::Stopped),
-                    )));
-                    continue;
+            let raft = {
+                let groups = self.groups.lock().unwrap();
+                match groups.get(&group_id) {
+                    Some(g) => g.raft.clone(),
+                    None => {
+                        let _ = response_tx.send(encode::<Result<(), typ::RaftError>>(Err(
+                            typ::RaftError::Fatal(openraft::error::Fatal::Stopped),
+                        )));
+                        continue;
+                    }
                 }
             };
 
             let res = match path.as_str() {
-                "/raft/append" => api::append(group, payload).await,
-                "/raft/snapshot" => api::snapshot(group, payload).await,
-                "/raft/vote" => api::vote(group, payload).await,
-                "/raft/transfer_leader" => api::transfer_leader(group, payload).await,
+                "/raft/append" => api::append(&raft, payload).await,
+                "/raft/snapshot" => api::snapshot(&raft, payload).await,
+                "/raft/vote" => api::vote(&raft, payload).await,
+                "/raft/transfer_leader" => api::transfer_leader(&raft, payload).await,
                 _ => {
                     tracing::warn!("unknown path: {}", path);
                     encode::<Result<(), typ::RaftError>>(Err(typ::RaftError::Fatal(
@@ -125,7 +150,7 @@ where
     S: StateMachine,
     F: FnMut(GroupId) -> S,
 {
-    let (mut node, _tx) = Node::new(node_id, router.clone());
+    let (node, _tx) = Node::new(node_id, router.clone());
 
     for &group_id in group_ids {
         let config = Config {
