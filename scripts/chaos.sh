@@ -79,7 +79,11 @@ start_cluster() {
 start_one_node() {
   local id="$1"
   local node_data="$DATA/node-$id"
+  local extra=()
   mkdir -p "$node_data"
+  if [[ "${JEPSEN:-0}" == "1" || "${NO_AUTO_PROPOSE:-0}" == "1" ]]; then
+    extra=(--no-auto-propose)
+  fi
   "$ROOT/target/debug/multiraft-demo" \
     --mode node \
     --node-id "$id" \
@@ -87,6 +91,7 @@ start_one_node() {
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
     --data-dir "$node_data" \
+    "${extra[@]}" \
     >"$DATA/node-$id.log" 2>&1 &
   echo $! >"$DATA/node-$id.pid"
   log "restarted node ${id} pid=$(cat "$DATA/node-$id.pid")"
