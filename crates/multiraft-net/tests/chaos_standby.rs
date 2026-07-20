@@ -1,6 +1,6 @@
 //! In-process chaos for Standby (Learner offload / recover / promote).
 //!
-//! Maps to `docs/chaos-checklist.md` (C40–C43).
+//! Maps to `docs/chaos-checklist.md` (C40–C48).
 //!
 //! Run: `cargo test -p multiraft-net --test chaos_standby`
 
@@ -569,4 +569,472 @@ async fn promote_standby_then_kill_old_voter() {
     propose_on_leader_skipping(&nodes, group, CounterFsm::encode_add(7, 777), &dead).await;
     let after = max_value_skipping(&nodes, group, &dead).await;
     assert!(after >= before + 7);
+}
+
+/// C45: Promote then demote under load — back to 3-voter quorum; still writable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promote_then_demote_under_load() {
+    let peer_ids = [1u64, 2, 3, 4];
+    let voter_ids = [1u64, 2, 3];
+    let standby_id = 4u64;
+    let group = 0u64;
+    let members = voter_ids.to_vec();
+    let dirs: Vec<_> = peer_ids.iter().map(|&id| temp_dir("c45", id)).collect();
+    let fabric = SharedFabric::new();
+
+    let mut voters = Vec::new();
+    for (i, &id) in voter_ids.iter().enumerate() {
+        voters.push(
+            fabric
+                .start_node(cfg(id, &peer_ids, dirs[i].clone(), NodeRole::Voter))
+                .await
+                .unwrap(),
+        );
+    }
+    let standby = fabric
+        .start_node(cfg(
+            standby_id,
+            &peer_ids,
+            dirs[3].clone(),
+            NodeRole::Standby,
+        ))
+        .await
+        .unwrap();
+
+    for n in &voters {
+        n.create_group(group, &members).await.unwrap();
+    }
+    standby.create_group(group, &members).await.unwrap();
+
+    let leader_id = wait_for_leader(&voters, group, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let leader = voters.iter().find(|n| n.node_id() == leader_id).unwrap();
+    leader.add_standby(group, standby_id).await.unwrap();
+
+    for i in 0..3u64 {
+        propose_on_leader(&voters, group, CounterFsm::encode_add(1, 300 + i)).await;
+    }
+    wait_fsm_ge(&standby, group, 3, Duration::from_secs(10)).await;
+
+    let lid = wait_for_leader(&voters, group, Duration::from_secs(5))
+        .await
+        .unwrap();
+    voters
+        .iter()
+        .find(|n| n.node_id() == lid)
+        .unwrap()
+        .promote_standby(group, standby_id)
+        .await
+        .unwrap();
+
+    // After promote, former Standby may become leader — propose on any of 1..4.
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let data = CounterFsm::encode_add(2, 310);
+        loop {
+            let mut ok = false;
+            for n in &voters {
+                if n.is_leader(group) && n.propose(group, data.clone()).await.is_ok() {
+                    ok = true;
+                    break;
+                }
+            }
+            if !ok && standby.is_leader(group) {
+                ok = standby.propose(group, data.clone()).await.is_ok();
+            }
+            if ok {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timed out proposing after promote");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // Demote back to learner (from current leader, which may be the promoted node).
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let mut done = false;
+            for n in &voters {
+                if n.is_leader(group) {
+                    match n.demote_to_standby(group, standby_id).await {
+                        Ok(()) => {
+                            done = true;
+                            break;
+                        }
+                        Err(multiraft_core::MultiRaftError::NotLeader { .. }) => {}
+                        Err(e) => panic!("demote: {e:?}"),
+                    }
+                }
+            }
+            if !done && standby.is_leader(group) {
+                standby
+                    .demote_to_standby(group, standby_id)
+                    .await
+                    .unwrap();
+                done = true;
+            }
+            if done {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timed out demoting");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let learners = voters
+            .iter()
+            .find_map(|n| n.learner_ids(group))
+            .or_else(|| standby.learner_ids(group))
+            .unwrap_or_default();
+        if learners.contains(&standby_id) {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("after demote, {standby_id} not learner");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let before = max_voter_value(&voters, group).await;
+    propose_on_leader(&voters, group, CounterFsm::encode_add(5, 320)).await;
+    let after = max_voter_value(&voters, group).await;
+    assert!(after >= before + 5);
+    wait_fsm_ge(&standby, group, after, Duration::from_secs(15)).await;
+}
+
+/// C46: Multi-group + Standby — kill a leader; all groups stay writable; Standby catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multi_group_standby_leader_kill() {
+    let peer_ids = [1u64, 2, 3, 4];
+    let voter_ids = [1u64, 2, 3];
+    let standby_id = 4u64;
+    let groups = [0u64, 1, 2];
+    let members = voter_ids.to_vec();
+    let dirs: Vec<_> = peer_ids.iter().map(|&id| temp_dir("c46", id)).collect();
+    let fabric = SharedFabric::new();
+
+    let mut voters = Vec::new();
+    for (i, &id) in voter_ids.iter().enumerate() {
+        voters.push(
+            fabric
+                .start_node(cfg(id, &peer_ids, dirs[i].clone(), NodeRole::Voter))
+                .await
+                .unwrap(),
+        );
+    }
+    let standby = fabric
+        .start_node(cfg(
+            standby_id,
+            &peer_ids,
+            dirs[3].clone(),
+            NodeRole::Standby,
+        ))
+        .await
+        .unwrap();
+
+    for &g in &groups {
+        for n in &voters {
+            n.create_group(g, &members).await.unwrap();
+        }
+        standby.create_group(g, &members).await.unwrap();
+    }
+
+    for &g in &groups {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let lid = wait_for_leader(&voters, g, Duration::from_secs(10))
+                .await
+                .unwrap();
+            match voters
+                .iter()
+                .find(|n| n.node_id() == lid)
+                .unwrap()
+                .add_standby(g, standby_id)
+                .await
+            {
+                Ok(()) => break,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("configuration change") || msg.contains("NotLeader") {
+                        if std::time::Instant::now() >= deadline {
+                            panic!("add_standby group {g}: {e:?}");
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    panic!("add_standby group {g}: {e:?}");
+                }
+            }
+        }
+    }
+
+    let mut expected = [0i64; 3];
+    for (gi, &g) in groups.iter().enumerate() {
+        for i in 0..3u64 {
+            propose_on_leader(&voters, g, CounterFsm::encode_add(1, (gi as u64) * 100 + i + 1))
+                .await;
+            expected[gi] += 1;
+        }
+        wait_fsm_ge(&standby, g, expected[gi], Duration::from_secs(10)).await;
+    }
+
+    let kill_group = groups[0];
+    let kill_leader = wait_for_leader(&voters, kill_group, Duration::from_secs(5))
+        .await
+        .unwrap();
+    voters
+        .iter()
+        .find(|n| n.node_id() == kill_leader)
+        .unwrap()
+        .shutdown()
+        .await
+        .unwrap();
+    let dead = [kill_leader];
+
+    for (gi, &g) in groups.iter().enumerate() {
+        wait_for_leader_skipping(&voters, g, &dead, Duration::from_secs(15)).await;
+        propose_on_leader_skipping(
+            &voters,
+            g,
+            CounterFsm::encode_add(2, 900 + gi as u64),
+            &dead,
+        )
+        .await;
+        expected[gi] += 2;
+        let v = max_value_skipping(&voters, g, &dead).await;
+        assert!(v >= expected[gi], "group {g}: {v} < {}", expected[gi]);
+        wait_fsm_ge(&standby, g, expected[gi], Duration::from_secs(15)).await;
+    }
+}
+
+/// C47: Corrupt snapshot ad fails closed; wiped voter still catches up via log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_snapshot_ad_fails_closed_then_log_catchup() {
+    let peer_ids = [1u64, 2, 3, 4];
+    let voter_ids = [1u64, 2, 3];
+    let standby_id = 4u64;
+    let group = 0u64;
+    let members = voter_ids.to_vec();
+    let dirs: Vec<_> = peer_ids.iter().map(|&id| temp_dir("c47", id)).collect();
+    let fabric = SharedFabric::new();
+
+    let mut voters = Vec::new();
+    for (i, &id) in voter_ids.iter().enumerate() {
+        voters.push(
+            fabric
+                .start_node(cfg(id, &peer_ids, dirs[i].clone(), NodeRole::Voter))
+                .await
+                .unwrap(),
+        );
+    }
+    let standby = fabric
+        .start_node(cfg(
+            standby_id,
+            &peer_ids,
+            dirs[3].clone(),
+            NodeRole::Standby,
+        ))
+        .await
+        .unwrap();
+
+    for n in &voters {
+        n.create_group(group, &members).await.unwrap();
+    }
+    standby.create_group(group, &members).await.unwrap();
+
+    let leader_id = wait_for_leader(&voters, group, Duration::from_secs(10))
+        .await
+        .unwrap();
+    voters
+        .iter()
+        .find(|n| n.node_id() == leader_id)
+        .unwrap()
+        .add_standby(group, standby_id)
+        .await
+        .unwrap();
+
+    let mut expected = 0i64;
+    for i in 0..4u64 {
+        propose_on_leader(&voters, group, CounterFsm::encode_add(1, 400 + i)).await;
+        expected += 1;
+    }
+    wait_fsm_ge(&standby, group, expected, Duration::from_secs(10)).await;
+
+    voters
+        .iter()
+        .find(|n| n.is_leader(group))
+        .unwrap()
+        .trigger_standby_snapshot(group)
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let entry = loop {
+        if let Some(e) = standby.latest_catalog_entry(group) {
+            break e;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("no catalog");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let data = std::fs::read(entry.dir.join("data.bin")).unwrap();
+    let (addr, _h) = spawn_snap_server(SnapServe {
+        data: data.clone(),
+        last_index: entry.last_index,
+        last_term: entry.last_term,
+        snapshot_id: entry.snapshot_id.clone(),
+        sha256_hex: "0".repeat(64), // corrupt
+    })
+    .await;
+
+    let victim_id = voter_ids
+        .iter()
+        .copied()
+        .find(|&id| id != leader_id)
+        .unwrap();
+    let victim_idx = voters.iter().position(|n| n.node_id() == victim_id).unwrap();
+    voters[victim_idx].shutdown().await.unwrap();
+    let dead = [victim_id];
+
+    propose_on_leader_skipping(
+        &voters,
+        group,
+        CounterFsm::encode_add(3, 499),
+        &dead,
+    )
+    .await;
+    expected += 3;
+
+    let _ = std::fs::remove_dir_all(&dirs[victim_idx]);
+    std::fs::create_dir_all(&dirs[victim_idx]).unwrap();
+    voters[victim_idx] = fabric
+        .start_node(cfg(
+            victim_id,
+            &peer_ids,
+            dirs[victim_idx].clone(),
+            NodeRole::Voter,
+        ))
+        .await
+        .unwrap();
+    voters[victim_idx]
+        .create_group(group, &members)
+        .await
+        .unwrap();
+    voters[victim_idx].record_snapshot_ad(SnapshotAdvertisement {
+        group,
+        last_index: entry.last_index,
+        last_term: entry.last_term,
+        snapshot_id: entry.snapshot_id.clone(),
+        size: data.len() as u64,
+        sha256_hex: "0".repeat(64),
+        fetch_url: format!("http://{addr}/snap"),
+    });
+
+    match voters[victim_idx]
+        .try_recover_from_standby_ads(group)
+        .await
+        .unwrap()
+    {
+        RecoverOutcome::FetchFailed { .. } => {}
+        other => panic!("expected FetchFailed, got {other:?}"),
+    }
+
+    // Log replication from survivors must still restore the FSM.
+    wait_fsm_ge(&voters[victim_idx], group, expected, Duration::from_secs(20)).await;
+}
+
+/// C48: Standby replication throttle under churn — kill Standby mid-load; voters keep writing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn throttled_standby_kill_under_churn() {
+    let peer_ids = [1u64, 2, 3, 4];
+    let voter_ids = [1u64, 2, 3];
+    let standby_id = 4u64;
+    let group = 0u64;
+    let members = voter_ids.to_vec();
+    let dirs: Vec<_> = peer_ids.iter().map(|&id| temp_dir("c48", id)).collect();
+    let fabric = SharedFabric::new();
+
+    let mut voters = Vec::new();
+    for (i, &id) in voter_ids.iter().enumerate() {
+        let mut c = cfg(id, &peer_ids, dirs[i].clone(), NodeRole::Voter);
+        c.standby_replicate_delay_ms = 40;
+        c.standby_max_inflight = 2;
+        voters.push(fabric.start_node(c).await.unwrap());
+    }
+    let mut sc = cfg(
+        standby_id,
+        &peer_ids,
+        dirs[3].clone(),
+        NodeRole::Standby,
+    );
+    sc.standby_replicate_delay_ms = 40;
+    let standby = fabric.start_node(sc).await.unwrap();
+
+    for n in &voters {
+        n.create_group(group, &members).await.unwrap();
+    }
+    standby.create_group(group, &members).await.unwrap();
+
+    let leader_id = wait_for_leader(&voters, group, Duration::from_secs(10))
+        .await
+        .unwrap();
+    voters
+        .iter()
+        .find(|n| n.node_id() == leader_id)
+        .unwrap()
+        .add_standby(group, standby_id)
+        .await
+        .unwrap();
+
+    for i in 0..6u64 {
+        propose_on_leader(&voters, group, CounterFsm::encode_add(1, 500 + i)).await;
+    }
+    let before_kill = max_voter_value(&voters, group).await;
+    assert!(before_kill >= 6);
+
+    standby.shutdown().await.unwrap();
+
+    for i in 0..8u64 {
+        propose_on_leader(&voters, group, CounterFsm::encode_add(1, 600 + i)).await;
+    }
+    let after = max_voter_value(&voters, group).await;
+    assert!(
+        after >= before_kill + 8,
+        "throttled path must not stall voters: after={after} before={before_kill}"
+    );
+
+    let standby2 = fabric
+        .start_node(cfg(
+            standby_id,
+            &peer_ids,
+            dirs[3].clone(),
+            NodeRole::Standby,
+        ))
+        .await
+        .unwrap();
+    standby2.create_group(group, &members).await.unwrap();
+    let lid = wait_for_leader(&voters, group, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let _ = voters
+        .iter()
+        .find(|n| n.node_id() == lid)
+        .unwrap()
+        .add_standby(group, standby_id)
+        .await;
+
+    wait_fsm_ge(&standby2, group, after, Duration::from_secs(20)).await;
+    let stale = standby2
+        .read_stale(group, |fsm| fsm.value(group))
+        .await
+        .unwrap();
+    assert_eq!(stale.value, after);
 }

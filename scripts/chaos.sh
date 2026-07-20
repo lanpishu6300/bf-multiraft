@@ -31,8 +31,10 @@ DATA="${CHAOS_DATA:-$ROOT/.chaos-data}"
 WORKDIR=""
 # Voter count for majority; Standby is NODES+1 when STANDBY=1.
 MAX_NODE_ID="$NODES"
+PEER_NODES="$NODES"
 if [[ "$STANDBY" == "1" ]]; then
   MAX_NODE_ID=$((NODES + 1))
+  PEER_NODES=$((NODES + 1))
 fi
 
 log() { printf '[chaos] %s\n' "$*"; }
@@ -108,6 +110,7 @@ start_one_node() {
     --mode node \
     --node-id "$id" \
     --nodes "$NODES" \
+    --peer-nodes "${PEER_NODES:-$NODES}" \
     "$role_flag" "$role_val" \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
@@ -137,6 +140,122 @@ readd_standby() {
     sleep 0.3
   done
   log "warning: add_standby ${standby_id} did not succeed"
+}
+
+# POST path on any live admin (voters + optional Standby) until one succeeds.
+post_voter_admin() {
+  local path="$1"
+  local body="${2:-}"
+  local id admin_port attempt=0 max_id
+  max_id="$NODES"
+  if [[ "$STANDBY" == "1" ]]; then
+    max_id=$((NODES + 1))
+  fi
+  while [[ "$attempt" -lt 40 ]]; do
+    id=1
+    while [[ "$id" -le "$max_id" ]]; do
+      admin_port=$((BASE_PORT + 100 + id - 1))
+      if [[ -n "$body" ]]; then
+        if curl -sf -X POST "http://127.0.0.1:${admin_port}${path}" \
+          -H 'content-type: application/json' -d "$body" >/dev/null 2>&1; then
+          echo "$id"
+          return 0
+        fi
+      else
+        if curl -sf -X POST "http://127.0.0.1:${admin_port}${path}" \
+          >/dev/null 2>&1; then
+          echo "$id"
+          return 0
+        fi
+      fi
+      id=$((id + 1))
+    done
+    attempt=$((attempt + 1))
+    sleep 0.25
+  done
+  return 1
+}
+
+# Newest ad fetch_url from any live voter (empty if none).
+best_ad_fetch_url() {
+  local id admin_port json url
+  id=1
+  while [[ "$id" -le "$NODES" ]]; do
+    admin_port=$((BASE_PORT + 100 + id - 1))
+    if json="$(curl -fsS --max-time 2 "http://127.0.0.1:${admin_port}/admin/best_snapshot_ad/0" 2>/dev/null)"; then
+      url="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get("ad",{}).get("fetch_url",""))' "$json")"
+      if [[ -n "$url" ]]; then
+        echo "$url"
+        return 0
+      fi
+    fi
+    id=$((id + 1))
+  done
+  return 1
+}
+
+# Wait until a node's admin HTTP is accepting requests.
+wait_admin_ready() {
+  local id="$1"
+  local label="${2:-admin-${id}}"
+  local admin_port attempt=0
+  admin_port=$((BASE_PORT + 100 + id - 1))
+  while [[ "$attempt" -lt 60 ]]; do
+    if curl -sf --max-time 1 "http://127.0.0.1:${admin_port}/admin/groups/0/status" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.25
+  done
+  fail "${label}: admin not ready on :${admin_port}"
+}
+
+# Pull Standby snapshot into a wiped voter; retries until install or hard fail.
+replicate_from_standby() {
+  local victim="$1"
+  local label="${2:-replicate}"
+  local admin_port fetch_url attempt=0 body resp
+  admin_port=$((BASE_PORT + 100 + victim - 1))
+  wait_admin_ready "$victim" "${label}-admin"
+  fetch_url="$(best_ad_fetch_url)" || {
+    log "warning: ${label}: no best_snapshot_ad; relying on Raft log catch-up"
+    return 1
+  }
+  log "replicate wiped node ${victim} from ${fetch_url}"
+  body="$(python3 -c 'import json,sys; print(json.dumps({"fetch_url":sys.argv[1]}))' "$fetch_url")"
+  while [[ "$attempt" -lt 20 ]]; do
+    resp="$(curl -sS -w '\n%{http_code}' -X POST \
+      "http://127.0.0.1:${admin_port}/admin/replicate_standby_snapshot/0" \
+      -H 'content-type: application/json' \
+      -d "$body" 2>/dev/null || true)"
+    if echo "$resp" | tail -n1 | grep -q '^200$'; then
+      log "${label}: Installed via fetch_url"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.4
+  done
+  log "warning: ${label}: replicate with fetch_url failed after retries (log catch-up may still work)"
+  return 1
+}
+
+wait_standby_catalog() {
+  local standby_id="$1"
+  local label="$2"
+  local admin_port deadline json
+  admin_port=$((BASE_PORT + 100 + standby_id - 1))
+  deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    if json="$(curl -fsS --max-time 2 "http://127.0.0.1:${admin_port}/admin/catalog/0" 2>/dev/null)"; then
+      if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d.get("ok") and d.get("last_index",0)>0' "$json"; then
+        log "${label}: standby catalog ready"
+        return 0
+      fi
+    fi
+    sleep 0.4
+  done
+  fail "${label}: standby ${standby_id} catalog not ready"
 }
 
 find_live_admin() {
@@ -482,7 +601,7 @@ run_double_kill_rounds() {
 }
 
 # Kill/restart Standby (does not affect voter majority). Then kill leader once.
-run_standby_rounds() {
+run_standby_kill_restart_rounds() {
   local round=1 standby_id kill_pid
   standby_id=$((NODES + 1))
   while [[ "$round" -le "$ROUNDS" ]]; do
@@ -511,8 +630,91 @@ run_standby_rounds() {
     log "standby-r${round}: OK"
     round=$((round + 1))
   done
+}
+
+# Promote Standby → kill a follower → demote back (C43/C45 multi-process).
+run_standby_promote_round() {
+  local standby_id kill_node via
+  standby_id=$((NODES + 1))
+  log "=== standby promote/demote ==="
+  fetch_all_groups "$SNAPSHOT" || fail "standby-promote: fetch pre"
+  values_file <"$SNAPSHOT" >"$VALUES_PRE"
+
+  via="$(post_voter_admin "/admin/promote_standby/0/${standby_id}")" \
+    || fail "standby-promote: promote failed"
+  log "promote_standby ${standby_id} via node ${via}"
+  sleep 0.5
+
+  kill_node="$(pick_live_follower)" || fail "standby-promote: no follower"
+  # After promote, majority is among 4 voters; killing one original follower is safe.
+  kill_restart_one "$kill_node" "standby-promote-kill"
+
+  via="$(post_voter_admin "/admin/demote_standby/0/${standby_id}")" \
+    || fail "standby-promote: demote failed"
+  log "demote_standby ${standby_id} via node ${via}"
+  sleep 0.3
+  readd_standby "$standby_id"
+
+  wait_all_groups_healthy "standby-promote-done" "$AFTER"
+  values_file <"$AFTER" >"$VALUES_POST"
+  assert_values_not_backwards "$VALUES_PRE" "$VALUES_POST" "standby-promote"
+  log "standby promote/demote OK"
+}
+
+# Trigger Standby snapshot, wipe a voter, recover via ads (C42 multi-process).
+run_standby_recover_round() {
+  local standby_id victim via kill_pid admin_port id port
+  standby_id=$((NODES + 1))
+  log "=== standby snapshot recover ==="
+  fetch_all_groups "$SNAPSHOT" || fail "standby-recover: fetch pre"
+  values_file <"$SNAPSHOT" >"$VALUES_PRE"
+
+  # Ensure Standby has applied recent log before snapshot trigger.
+  id=1
+  while [[ "$id" -le 3 ]]; do
+    port=$((BASE_PORT + 100))
+    curl -sf -X POST "http://127.0.0.1:${port}/groups/0/inc" \
+      -H 'content-type: application/json' -d "{\"delta\":1,\"idem\":null}" \
+      >/dev/null 2>&1 || true
+    id=$((id + 1))
+    sleep 0.2
+  done
+  sleep 0.5
+
+  via="$(post_voter_admin "/admin/standby_snapshot/0")" \
+    || fail "standby-recover: trigger snapshot failed"
+  log "standby_snapshot via node ${via}"
+  wait_standby_catalog "$standby_id" "standby-recover"
+
+  victim="$(pick_live_follower)" || fail "standby-recover: no follower"
+  kill_pid="$(cat "$DATA/node-${victim}.pid" 2>/dev/null || true)"
+  [[ -n "$kill_pid" ]] || fail "standby-recover: missing pid ${victim}"
+  log "kill -9 wipe voter ${victim} pid=${kill_pid}"
+  kill -9 "$kill_pid"
+  wait "$kill_pid" 2>/dev/null || true
+  rm -rf "$DATA/node-${victim}"
+  mkdir -p "$DATA/node-${victim}"
+
+  wait_all_groups_healthy "standby-recover-postkill" "$AFTER"
+  values_file <"$AFTER" >"$VALUES_POST"
+  assert_values_not_backwards "$VALUES_PRE" "$VALUES_POST" "standby-recover-postkill"
+  cp "$VALUES_POST" "$VALUES_PRE"
+
+  start_one_node "$victim"
+  # Prefer explicit fetch_url so the wiped node does not need a local ad list.
+  replicate_from_standby "$victim" "standby-recover" || true
+
+  wait_node_catchup "$victim" "$VALUES_PRE" "$AFTER" "$VALUES_POST" "standby-recover"
+  log "standby snapshot recover OK"
+}
+
+run_standby_rounds() {
+  run_standby_kill_restart_rounds
+  # Recover while Standby is still a clean learner (before promote churn).
+  run_standby_recover_round
   log "=== standby: kill_leader with Standby present ==="
   run_kill_leader_rounds
+  run_standby_promote_round
 }
 
 run_one_scenario() {

@@ -50,7 +50,11 @@
 | C41 | 有 Standby 时杀 Leader | 存活节点选主；值不回退；Standby 追上 + `read_stale` | ✅ | `kill_leader_with_standby_present` |
 | C42 | 擦掉 voter 并从 Standby ad 恢复 | 持续写入下 `try_recover_from_standby_ads` 后追上 | ✅ | `voter_recover_from_standby_under_load` |
 | C43 | Promote Standby 后再杀旧 voter | 4 节点多数派仍可写 | ✅ | `promote_standby_then_kill_old_voter` |
-| C44 | 多进程杀/启 Standby + 杀主 | Voter 值不回退 | 🔶 | `scripts/chaos.sh` `SCENARIO=standby` |
+| C44 | 多进程杀/启 Standby + 杀主 + promote + recover | Voter 值不回退；`--peer-nodes` 含 Standby | ✅ | `scripts/chaos.sh` `SCENARIO=standby` |
+| C45 | 负载下 promote 再 demote | 回到 3 voter + learner；仍可写；Standby 追上 | ✅ | `promote_then_demote_under_load` |
+| C46 | 多 Group + Standby 杀主 | 杀主后各 Group 可写；Standby 各组追上 | ✅ | `multi_group_standby_leader_kill` |
+| C47 | 损坏 snapshot ad | `FetchFailed`；擦盘 voter 仍经 log 追上 | ✅ | `bad_snapshot_ad_fails_closed_then_log_catchup` |
+| C48 | 限速下杀 Standby 抖动 | `standby_replicate_delay_ms` 不拖死 voter；Standby 追上 + stale | ✅ | `throttled_standby_kill_under_churn` |
 
 ## 5. 明确不做（本期）
 

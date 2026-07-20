@@ -103,9 +103,14 @@
         _ (doto (File. data) (.mkdirs))
         logf (File. log)
         ;; Only restart voters here; Standby (id > node-count) is out of band.
+        peer-nodes (or (some-> (System/getenv "PEER_NODES") Integer/parseInt)
+                       (if (= "1" (System/getenv "STANDBY"))
+                         (inc (Integer/parseInt ns))
+                         (Integer/parseInt ns)))
         args ["--mode" "node"
               "--node-id" (str id)
               "--nodes" ns
+              "--peer-nodes" (str peer-nodes)
               "--role" "voter"
               "--base-port" bp
               "--groups" gs
