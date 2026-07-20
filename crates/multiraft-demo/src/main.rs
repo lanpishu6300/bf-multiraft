@@ -85,9 +85,14 @@ struct Args {
     #[arg(long, default_value = ".demo-data")]
     data_dir: PathBuf,
 
-    /// Peer / logical node count (default 3). Voters only; standby is extra when `--role standby`.
+    /// Voting membership size (default 3). Standby uses a higher `--node-id`.
     #[arg(long, default_value_t = 3)]
     nodes: u64,
+
+    /// gRPC peer table size (`1..=peer_nodes`). Defaults to `max(nodes, node_id)`.
+    /// Set to `nodes+1` (or `+2` with daisy) so voters can reach Standby peers.
+    #[arg(long)]
+    peer_nodes: Option<u64>,
 
     /// Local Raft role (`voter` or `standby` learner).
     #[arg(long, value_enum, default_value_t = RoleArg::Voter)]
@@ -304,13 +309,20 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         SnapshotMode::Disabled
     };
 
-    // Voters: 1..=nodes. Standby may use node_id == nodes+1 (or any id outside members).
-    let max_peer = args.nodes.max(node_id);
+    // Voters: membership 1..=nodes. Standby may use node_id == nodes+1.
+    // Peer table must include Standby addresses or GrpcRouter cannot reach them.
+    let max_peer = args.peer_nodes.unwrap_or_else(|| args.nodes.max(node_id));
     if node_id < 1 {
         anyhow::bail!("--node-id must be >= 1");
     }
     if role == NodeRole::Voter && node_id > args.nodes {
         anyhow::bail!("voter --node-id must be in 1..={}", args.nodes);
+    }
+    if max_peer < args.nodes {
+        anyhow::bail!("--peer-nodes ({max_peer}) must be >= --nodes ({})", args.nodes);
+    }
+    if max_peer < node_id {
+        anyhow::bail!("--peer-nodes ({max_peer}) must be >= --node-id ({node_id})");
     }
 
     let peers = peer_addrs(args.base_port, max_peer);

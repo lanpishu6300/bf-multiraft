@@ -29,6 +29,14 @@ fi
 if [[ "$DAISY" == "1" && "$STANDBY" != "1" ]]; then
   STANDBY=1
 fi
+# gRPC peer table must include Standby (and daisy) ids or voters cannot replicate to them.
+PEER_NODES="$NODES"
+if [[ "$STANDBY" == "1" ]]; then
+  PEER_NODES=$((NODES + 1))
+fi
+if [[ "$DAISY" == "1" ]]; then
+  PEER_NODES=$((NODES + 2))
+fi
 
 # Jepsen / external clients: disable background propose_loop.
 # Set via JEPSEN=1 or NO_AUTO_PROPOSE=1.
@@ -62,6 +70,7 @@ while [[ "$id" -le "$NODES" ]]; do
     --mode node \
     --node-id "$id" \
     --nodes "$NODES" \
+    --peer-nodes "$PEER_NODES" \
     --role voter \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
@@ -82,6 +91,7 @@ if [[ "$STANDBY" == "1" ]]; then
     --mode node \
     --node-id "$STANDBY_ID" \
     --nodes "$NODES" \
+    --peer-nodes "$PEER_NODES" \
     --role standby \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
@@ -148,6 +158,7 @@ if [[ "$DAISY" == "1" ]]; then
     --mode node \
     --node-id "$DAISY_ID" \
     --nodes "$NODES" \
+    --peer-nodes "$PEER_NODES" \
     --role standby \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \

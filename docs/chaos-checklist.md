@@ -50,7 +50,11 @@
 | C41 | Kill Leader with Standby present | Survivors elect; values non-decreasing; Standby catches up + `read_stale` | ✅ | `kill_leader_with_standby_present` |
 | C42 | Wipe voter + recover from Standby ad | Under continued writes, `try_recover_from_standby_ads` then catch-up | ✅ | `voter_recover_from_standby_under_load` |
 | C43 | Promote Standby then kill old voter | 4-voter quorum remains writable | ✅ | `promote_standby_then_kill_old_voter` |
-| C44 | Multi-process Standby kill/restart + kill leader | Values non-decreasing on voters | 🔶 | `scripts/chaos.sh` `SCENARIO=standby` |
+| C44 | Multi-process Standby kill/restart + kill leader + promote + recover | Values non-decreasing on voters; `--peer-nodes` includes Standby | ✅ | `scripts/chaos.sh` `SCENARIO=standby` |
+| C45 | Promote then demote under load | Back to 3-voter + learner; still writable; Standby catches up | ✅ | `promote_then_demote_under_load` |
+| C46 | Multi-group + Standby leader kill | All groups writable after kill; Standby catches each group | ✅ | `multi_group_standby_leader_kill` |
+| C47 | Corrupt snapshot ad | `FetchFailed`; wiped voter still catches up via log | ✅ | `bad_snapshot_ad_fails_closed_then_log_catchup` |
+| C48 | Throttled Standby kill under churn | Voters keep writing despite `standby_replicate_delay_ms`; Standby catch-up + stale | ✅ | `throttled_standby_kill_under_churn` |
 
 ## 5. Explicitly out of scope (this period)
 
