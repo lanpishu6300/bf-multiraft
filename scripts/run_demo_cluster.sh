@@ -32,9 +32,11 @@ fi
 
 # Jepsen / external clients: disable background propose_loop.
 # Set via JEPSEN=1 or NO_AUTO_PROPOSE=1.
-NO_AUTO_PROPOSE_FLAG=()
+# Use a string (not an empty array) so `set -u` + Bash 3.2 does not trip on
+# `"${arr[@]}"` when the array is empty.
+NO_AUTO_PROPOSE_FLAG=""
 if [[ "${JEPSEN:-0}" == "1" || "${NO_AUTO_PROPOSE:-0}" == "1" ]]; then
-  NO_AUTO_PROPOSE_FLAG=(--no-auto-propose)
+  NO_AUTO_PROPOSE_FLAG="--no-auto-propose"
 fi
 
 export PATH="${HOME}/.cargo/bin:${PATH}"
@@ -55,6 +57,7 @@ id=1
 while [[ "$id" -le "$NODES" ]]; do
   NODE_DATA="$DATA/node-$id"
   mkdir -p "$NODE_DATA"
+  # shellcheck disable=SC2086
   "$BIN" \
     --mode node \
     --node-id "$id" \
@@ -63,7 +66,7 @@ while [[ "$id" -le "$NODES" ]]; do
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
     --data-dir "$NODE_DATA" \
-    "${NO_AUTO_PROPOSE_FLAG[@]}" \
+    $NO_AUTO_PROPOSE_FLAG \
     >"$DATA/node-$id.log" 2>&1 &
   echo $! >"$DATA/node-$id.pid"
   # Stagger binds so peers come up cleanly.

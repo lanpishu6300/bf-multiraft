@@ -64,9 +64,14 @@
   (when pid
     (zero? (:exit (shell/sh "kill" "-0" (str pid))))))
 
+(defn- voter-ids
+  "Nodes that participate in the Raft quorum (exclude Standby extras)."
+  [test]
+  (mapv str (:nodes test)))
+
 (defn- live-ids
   [test]
-  (->> (map str (:nodes test))
+  (->> (voter-ids test)
        (filter #(pid-alive? (read-pid test %)))
        vec))
 
@@ -97,9 +102,11 @@
         ns (str (node-count test))
         _ (doto (File. data) (.mkdirs))
         logf (File. log)
+        ;; Only restart voters here; Standby (id > node-count) is out of band.
         args ["--mode" "node"
               "--node-id" (str id)
               "--nodes" ns
+              "--role" "voter"
               "--base-port" bp
               "--groups" gs
               "--data-dir" data
@@ -107,7 +114,7 @@
         pb (doto (ProcessBuilder. ^java.util.List (vec (cons bin args)))
              (.redirectOutput logf)
              (.redirectError logf))]
-    (info "nemesis restart node" id "bin" bin)
+    (info "nemesis restart voter" id "bin" bin)
     (try
       (let [proc (.start pb)
             pid (.pid proc)]

@@ -42,7 +42,17 @@
 | C30 | 多 Group + 杀主风暴 | ≥5 Group 并发写时杀主，最终均可写 | ✅ | `multi_group_storm_under_leader_kill` |
 | C31 | 连接数不随 Group 膨胀 | 故障后 `unique_peer_links` 仍 O(nodes) | ✅ | `peer_links_remain_o_nodes_under_churn` |
 
-## 4. 明确不做（本期）
+## 4. Standby / DR 卸载
+
+| ID | 场景 | 期望 | 状态 | 实现 |
+|----|------|------|------|------|
+| C40 | 负载下杀 Standby | Voter 继续写；Standby 重启后追上 | ✅ | `chaos_standby::kill_standby_voters_keep_writing` |
+| C41 | 有 Standby 时杀 Leader | 存活节点选主；值不回退；Standby 追上 + `read_stale` | ✅ | `kill_leader_with_standby_present` |
+| C42 | 擦掉 voter 并从 Standby ad 恢复 | 持续写入下 `try_recover_from_standby_ads` 后追上 | ✅ | `voter_recover_from_standby_under_load` |
+| C43 | Promote Standby 后再杀旧 voter | 4 节点多数派仍可写 | ✅ | `promote_standby_then_kill_old_voter` |
+| C44 | 多进程杀/启 Standby + 杀主 | Voter 值不回退 | 🔶 | `scripts/chaos.sh` `SCENARIO=standby` |
+
+## 5. 明确不做（本期）
 
 | ID | 场景 | 原因 |
 |----|------|------|
@@ -57,6 +67,7 @@
 ```bash
 # 清单内 in-process 自动化
 cargo test -p multiraft-net --test chaos_failover -- --nocapture
+cargo test -p multiraft-net --test chaos_standby -- --nocapture
 
 # 多进程脚本（可组合）
 ./scripts/chaos.sh                          # SCENARIO=random ROUNDS=5
@@ -64,9 +75,11 @@ SCENARIO=kill_leader ROUNDS=3 ./scripts/chaos.sh
 SCENARIO=kill_follower ROUNDS=3 ./scripts/chaos.sh
 SCENARIO=rolling ROUNDS=1 ./scripts/chaos.sh
 SCENARIO=double_kill ROUNDS=3 ./scripts/chaos.sh
-SCENARIO=all ROUNDS=2 ./scripts/chaos.sh    # 依次跑完脚本场景
+SCENARIO=standby ROUNDS=1 ./scripts/chaos.sh
+SCENARIO=all ROUNDS=2 ./scripts/chaos.sh    # 含 standby
 
 # 一键
 ./scripts/test_all.sh
 CHAOS=1 ./scripts/test_all.sh
+JEPSEN=1 ./scripts/test_all.sh              # 另跑本地 Jepsen（需 lein）
 ```

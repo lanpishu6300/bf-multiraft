@@ -5,12 +5,13 @@
 # Compatible with macOS Bash 3.2 (no mapfile / namerefs / assoc arrays).
 #
 # Env:
-#   SCENARIO     random|kill_leader|kill_follower|rolling|double_kill|all
+#   SCENARIO     random|kill_leader|kill_follower|rolling|double_kill|standby|all
 #                (default: random)
 #   ROUNDS       (default 5) — per-scenario rounds; rolling = full node pass per round
 #   BASE_PORT    (default 22000 — avoid clashing with acceptance)
 #   GROUPS       (default 5)
 #   NODES        (default 3)
+#   STANDBY      0|1 — start Learner Standby (node NODES+1); forced on for SCENARIO=standby
 #   CHAOS_DATA   (default $ROOT/.chaos-data)
 set -euo pipefail
 
@@ -22,8 +23,17 @@ GROUPS="${GROUPS:-5}"
 NODES="${NODES:-3}"
 ROUNDS="${ROUNDS:-5}"
 SCENARIO="${SCENARIO:-random}"
+STANDBY="${STANDBY:-0}"
+if [[ "$SCENARIO" == "standby" ]]; then
+  STANDBY=1
+fi
 DATA="${CHAOS_DATA:-$ROOT/.chaos-data}"
 WORKDIR=""
+# Voter count for majority; Standby is NODES+1 when STANDBY=1.
+MAX_NODE_ID="$NODES"
+if [[ "$STANDBY" == "1" ]]; then
+  MAX_NODE_ID=$((NODES + 1))
+fi
 
 log() { printf '[chaos] %s\n' "$*"; }
 fail() { printf '[chaos] FAIL: %s\n' "$*" >&2; exit 1; }
@@ -47,12 +57,13 @@ http_get() {
 }
 
 stop_all_nodes() {
-  local id pid
+  local id pid max
   if [[ ! -d "$DATA" ]]; then
     return 0
   fi
+  max=$((NODES + 2))
   id=1
-  while [[ "$id" -le "$NODES" ]]; do
+  while [[ "$id" -le "$max" ]]; do
     if [[ -f "$DATA/node-$id.pid" ]]; then
       pid="$(cat "$DATA/node-$id.pid" 2>/dev/null || true)"
       if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -72,29 +83,60 @@ start_cluster() {
   fi
   mkdir -p "$DATA"
   DATA_DIR="$DATA" BASE_PORT="$BASE_PORT" GROUPS="$GROUPS" NODES="$NODES" \
+    STANDBY="$STANDBY" \
     "$ROOT/scripts/run_demo_cluster.sh" >/dev/null
-  log "cluster started data_dir=${DATA}"
+  log "cluster started data_dir=${DATA} STANDBY=${STANDBY}"
 }
 
 start_one_node() {
   local id="$1"
   local node_data="$DATA/node-$id"
-  local extra=()
+  # Strings avoid Bash 3.2 `set -u` unbound empty-array expand.
+  local extra=""
+  local role_flag="--role"
+  local role_val="voter"
   mkdir -p "$node_data"
   if [[ "${JEPSEN:-0}" == "1" || "${NO_AUTO_PROPOSE:-0}" == "1" ]]; then
-    extra=(--no-auto-propose)
+    extra="--no-auto-propose"
   fi
+  if [[ "$STANDBY" == "1" && "$id" -gt "$NODES" ]]; then
+    role_val="standby"
+    extra="--no-auto-propose"
+  fi
+  # shellcheck disable=SC2086
   "$ROOT/target/debug/multiraft-demo" \
     --mode node \
     --node-id "$id" \
     --nodes "$NODES" \
+    "$role_flag" "$role_val" \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
     --data-dir "$node_data" \
-    "${extra[@]}" \
+    $extra \
     >"$DATA/node-$id.log" 2>&1 &
   echo $! >"$DATA/node-$id.pid"
-  log "restarted node ${id} pid=$(cat "$DATA/node-$id.pid")"
+  log "restarted node ${id} --role ${role_val} pid=$(cat "$DATA/node-$id.pid")"
+}
+
+readd_standby() {
+  local standby_id="$1"
+  local id admin_port attempt=0
+  while [[ "$attempt" -lt 30 ]]; do
+    id=1
+    while [[ "$id" -le "$NODES" ]]; do
+      admin_port=$((BASE_PORT + 100 + id - 1))
+      if curl -sf -X POST \
+        "http://127.0.0.1:${admin_port}/admin/add_standby/0/${standby_id}" \
+        >/dev/null 2>&1; then
+        log "add_standby ${standby_id} ok via node ${id}"
+        return 0
+      fi
+      id=$((id + 1))
+    done
+    attempt=$((attempt + 1))
+    sleep 0.3
+  done
+  log "warning: add_standby ${standby_id} did not succeed"
 }
 
 find_live_admin() {
@@ -439,16 +481,51 @@ run_double_kill_rounds() {
   done
 }
 
+# Kill/restart Standby (does not affect voter majority). Then kill leader once.
+run_standby_rounds() {
+  local round=1 standby_id kill_pid
+  standby_id=$((NODES + 1))
+  while [[ "$round" -le "$ROUNDS" ]]; do
+    log "=== standby kill/restart round ${round}/${ROUNDS} (node ${standby_id}) ==="
+    fetch_all_groups "$SNAPSHOT" || fail "standby-r${round}: fetch before kill"
+    assert_groups_healthy "standby-r${round}-pre" "$SNAPSHOT"
+    values_file <"$SNAPSHOT" >"$VALUES_PRE"
+
+    kill_pid="$(cat "$DATA/node-${standby_id}.pid" 2>/dev/null || true)"
+    [[ -n "$kill_pid" ]] || fail "standby-r${round}: missing pid for standby ${standby_id}"
+    log "kill -9 standby ${standby_id} pid=${kill_pid}"
+    kill -9 "$kill_pid"
+    wait "$kill_pid" 2>/dev/null || true
+
+    wait_all_groups_healthy "standby-r${round}-postkill" "$AFTER"
+    values_file <"$AFTER" >"$VALUES_POST"
+    assert_values_not_backwards "$VALUES_PRE" "$VALUES_POST" "standby-r${round}-postkill"
+
+    cp "$VALUES_POST" "$VALUES_PRE"
+    start_one_node "$standby_id"
+    readd_standby "$standby_id"
+    # Voters must remain healthy; standby catch-up is best-effort (admin may be stale).
+    wait_all_groups_healthy "standby-r${round}-restart" "$AFTER"
+    values_file <"$AFTER" >"$VALUES_POST"
+    assert_values_not_backwards "$VALUES_PRE" "$VALUES_POST" "standby-r${round}-restart"
+    log "standby-r${round}: OK"
+    round=$((round + 1))
+  done
+  log "=== standby: kill_leader with Standby present ==="
+  run_kill_leader_rounds
+}
+
 run_one_scenario() {
   local name="$1"
-  log "SCENARIO=${name} ROUNDS=${ROUNDS} NODES=${NODES} GROUPS=${GROUPS}"
+  log "SCENARIO=${name} ROUNDS=${ROUNDS} NODES=${NODES} GROUPS=${GROUPS} STANDBY=${STANDBY}"
   case "$name" in
     random) run_random_rounds ;;
     kill_leader) run_kill_leader_rounds ;;
     kill_follower) run_kill_follower_rounds ;;
     rolling) run_rolling_rounds ;;
     double_kill) run_double_kill_rounds ;;
-    *) fail "unknown SCENARIO='${name}' (want random|kill_leader|kill_follower|rolling|double_kill|all)" ;;
+    standby) run_standby_rounds ;;
+    *) fail "unknown SCENARIO='${name}' (want random|kill_leader|kill_follower|rolling|double_kill|standby|all)" ;;
   esac
   log "SCENARIO=${name} OK"
 }
@@ -461,13 +538,13 @@ VALUES_PRE="${WORKDIR}/v_pre.txt"
 VALUES_POST="${WORKDIR}/v_post.txt"
 
 case "$SCENARIO" in
-  random|kill_leader|kill_follower|rolling|double_kill|all) ;;
+  random|kill_leader|kill_follower|rolling|double_kill|standby|all) ;;
   *) fail "unknown SCENARIO='${SCENARIO}'" ;;
 esac
 
-log "building + starting multi-process demo (SCENARIO=${SCENARIO} ROUNDS=${ROUNDS})"
+log "building + starting multi-process demo (SCENARIO=${SCENARIO} ROUNDS=${ROUNDS} STANDBY=${STANDBY})"
 export DATA_DIR="$DATA"
-export BASE_PORT GROUPS NODES
+export BASE_PORT GROUPS NODES STANDBY
 start_cluster wipe
 wait_any_admin
 
@@ -475,7 +552,16 @@ wait_all_groups_healthy "warmup" "$SNAPSHOT"
 log "warmup OK"
 
 if [[ "$SCENARIO" == "all" ]]; then
-  for name in random kill_leader kill_follower rolling double_kill; do
+  for name in random kill_leader kill_follower rolling double_kill standby; do
+    # standby scenario needs its own cluster with STANDBY=1
+    if [[ "$name" == "standby" ]]; then
+      STANDBY=1
+      MAX_NODE_ID=$((NODES + 1))
+      export STANDBY
+      start_cluster wipe
+      wait_any_admin
+      wait_all_groups_healthy "standby-warmup" "$SNAPSHOT"
+    fi
     run_one_scenario "$name"
   done
 else

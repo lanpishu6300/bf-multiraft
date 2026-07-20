@@ -18,6 +18,7 @@
 - [x] Aeron Standby premium parity **P1**: `promote_standby` / `demote_to_standby` transition
 - [x] Aeron Standby premium parity **P2**: daisy-chain (snapshot) / multi-standby / Range streaming fetch
 - [x] Aeron Standby premium parity **P3**: `read_stale` / Standby service offload
+- [x] Standby chaos (C40–C44) + Jepsen with optional `STANDBY=1`
 
 ## Phase-2 (downstream app)
 

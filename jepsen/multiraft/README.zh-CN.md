@@ -22,6 +22,15 @@
 会构建 Demo，以 `NO_AUTO_PROPOSE=1` / `GROUPS=1` 启动 3 节点集群，
 跑约 30s 的 counter 测试（含 kill/restart nemesis），然后拆除集群。
 
+可选 Standby（Learner，不在 Jepsen `:nodes` 中）：
+
+```bash
+STANDBY=1 ./scripts/run_jepsen.sh
+```
+
+客户端只接受 `"consistency":"linearizable"`；`"stale"` / `"local"` 记为失败。
+nemesis 只杀/启 voter `1..NODES`。
+
 ## 手动
 
 ```bash

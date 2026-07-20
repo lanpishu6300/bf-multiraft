@@ -42,7 +42,17 @@
 | C30 | Multi-Group + leader-kill storm | ≥5 Groups concurrent writes under kill; all writable eventually | ✅ | `multi_group_storm_under_leader_kill` |
 | C31 | Link count does not grow with Groups | After churn, `unique_peer_links` still O(nodes) | ✅ | `peer_links_remain_o_nodes_under_churn` |
 
-## 4. Explicitly out of scope (this period)
+## 4. Standby / DR offload
+
+| ID | Scenario | Expectation | Status | Implementation |
+|----|----------|-------------|--------|----------------|
+| C40 | Kill Standby under load | Voters keep writing; Standby restart catches up | ✅ | `chaos_standby::kill_standby_voters_keep_writing` |
+| C41 | Kill Leader with Standby present | Survivors elect; values non-decreasing; Standby catches up + `read_stale` | ✅ | `kill_leader_with_standby_present` |
+| C42 | Wipe voter + recover from Standby ad | Under continued writes, `try_recover_from_standby_ads` then catch-up | ✅ | `voter_recover_from_standby_under_load` |
+| C43 | Promote Standby then kill old voter | 4-voter quorum remains writable | ✅ | `promote_standby_then_kill_old_voter` |
+| C44 | Multi-process Standby kill/restart + kill leader | Values non-decreasing on voters | 🔶 | `scripts/chaos.sh` `SCENARIO=standby` |
+
+## 5. Explicitly out of scope (this period)
 
 | ID | Scenario | Reason |
 |----|----------|--------|
@@ -57,6 +67,7 @@
 ```bash
 # In-process automation from this checklist
 cargo test -p multiraft-net --test chaos_failover -- --nocapture
+cargo test -p multiraft-net --test chaos_standby -- --nocapture
 
 # Multi-process scripts (composable)
 ./scripts/chaos.sh                          # SCENARIO=random ROUNDS=5
@@ -64,9 +75,11 @@ SCENARIO=kill_leader ROUNDS=3 ./scripts/chaos.sh
 SCENARIO=kill_follower ROUNDS=3 ./scripts/chaos.sh
 SCENARIO=rolling ROUNDS=1 ./scripts/chaos.sh
 SCENARIO=double_kill ROUNDS=3 ./scripts/chaos.sh
-SCENARIO=all ROUNDS=2 ./scripts/chaos.sh    # run all script scenarios in order
+SCENARIO=standby ROUNDS=1 ./scripts/chaos.sh
+SCENARIO=all ROUNDS=2 ./scripts/chaos.sh    # includes standby
 
 # One-shot
 ./scripts/test_all.sh
 CHAOS=1 ./scripts/test_all.sh
+JEPSEN=1 ./scripts/test_all.sh              # also local Jepsen (needs lein)
 ```
