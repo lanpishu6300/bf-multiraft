@@ -68,7 +68,8 @@ Phase-1 demo injects `propose` locally (`POST /groups/{id}/inc` or background lo
 |-----|--------|
 | `propose` → Ok | Linearizable write (committed + applied) |
 | `read_linearizable` | Linearizable read (ReadIndex) |
-| `with_fsm` | Local / may be stale — debug only |
+| `read_stale` | Local + applied watermark; requires `enable_stale_queries` (Standby offload) |
+| `with_fsm` | Local / may be stale — debug / metrics |
 | Cross-group | No cross-symbol transactions |
 
 Failed / timed-out `propose` is **indeterminate** — retry with the same idempotency key.
@@ -96,11 +97,12 @@ Details: [specs/2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-
 
 Premium parity (HTTP pull from ads, standby replication throttle, promote/demote,
 multi-standby newest-ad pick, **snapshot daisy-chain** via `daisy_upstream_base`,
-HTTP Range chunked fetch with resume):
+HTTP Range chunked fetch with resume, Standby `read_stale` offload):
 [specs/2026-07-20-aeron-standby-parity-design.md](./specs/2026-07-20-aeron-standby-parity-design.md)
 · [中文](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md).
 
 P2 daisy is a **snapshot distribution chain** (not openraft log redirect).
+P3 `read_stale` is explicitly non-linearizable.
 
 ## Upstream pin
 

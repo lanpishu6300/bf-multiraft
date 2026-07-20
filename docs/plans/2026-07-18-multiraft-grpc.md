@@ -2,8 +2,6 @@
 
 **中文：** [2026-07-18-multiraft-grpc.zh-CN.md](./2026-07-18-multiraft-grpc.zh-CN.md)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or executing-plans. Steps use checkbox (`- [ ]`) syntax.
-
 **Goal:** Replace single-process-only demo networking with tonic/gRPC so 3 OS processes form a Multi-Raft cluster; acceptance kills a real leader PID.
 
 **Architecture:** Keep in-process `Router` for unit tests. Add `GrpcGroupRouter` + tonic server that demuxes by `group_id`. Demo `--mode node` binds Raft RPC + admin HTTP; `run_demo_cluster.sh` starts 3 processes. Acceptance uses `kill $LEADER_PID`.

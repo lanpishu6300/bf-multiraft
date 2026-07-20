@@ -118,11 +118,18 @@ struct GroupValueResp {
     group: u64,
     value: i64,
     leader: Option<u64>,
-    /// `"linearizable"` after a successful ReadIndex read; `"local"` for FSM fallback.
+    /// `"linearizable"` after a successful ReadIndex read; `"stale"` for Standby
+    /// offload; `"local"` for FSM fallback.
     consistency: &'static str,
     /// Present (and `true`) only when serving a non-linearizable local FSM value.
     #[serde(skip_serializing_if = "Option::is_none")]
     stale: Option<bool>,
+    /// Last applied index on the serving node (set for `consistency: "stale"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_index: Option<u64>,
+    /// Last applied term on the serving node (set for `consistency: "stale"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_term: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -328,12 +335,14 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     config.snapshot_keep = 2;
     config.admin_advertise_addr = Some(admin_addr);
     config.daisy_upstream_base = daisy_upstream.clone();
+    config.enable_stale_queries = role == NodeRole::Standby;
 
     info!(
         node_id,
         ?role,
         ?snapshot_mode,
         ?daisy_upstream,
+        stale_queries = config.enable_stale_queries,
         nodes = args.nodes,
         groups = args.groups,
         base_port = args.base_port,
@@ -626,6 +635,7 @@ async fn read_group_value_best_effort(
 async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<()> {
     let app = AxumRouter::new()
         .route("/groups/:id/value", get(group_value))
+        .route("/groups/:id/stale", get(group_stale_value))
         .route("/groups/:id/inc", post(group_inc))
         .route("/metrics/links", get(metrics_links))
         .route("/admin/shutdown_node/:id", post(shutdown_node))
@@ -1086,6 +1096,27 @@ async fn group_value(
     if !state.group_ids.contains(&id) {
         return Err(axum::http::StatusCode::NOT_FOUND);
     }
+    // Standby process: prefer explicit stale offload when enabled.
+    for n in &state.nodes {
+        if !n.stale_queries_enabled() {
+            continue;
+        }
+        match n.read_stale(id, |fsm| fsm.value(id)).await {
+            Ok(r) => {
+                return Ok(axum::Json(GroupValueResp {
+                    group: id,
+                    value: r.value,
+                    leader: n.leader(id),
+                    consistency: "stale",
+                    stale: Some(true),
+                    applied_index: Some(r.applied_index),
+                    applied_term: Some(r.applied_term),
+                }));
+            }
+            Err(MultiRaftError::StaleQueriesDisabled) => {}
+            Err(_) => {}
+        }
+    }
     let leader = state.nodes.iter().find_map(|n| n.leader(id));
     match read_group_value_best_effort(&state, id).await {
         Ok((value, "linearizable")) => Ok(axum::Json(GroupValueResp {
@@ -1094,6 +1125,8 @@ async fn group_value(
             leader,
             consistency: "linearizable",
             stale: None,
+            applied_index: None,
+            applied_term: None,
         })),
         Ok((value, _)) => Ok(axum::Json(GroupValueResp {
             group: id,
@@ -1101,9 +1134,61 @@ async fn group_value(
             leader,
             consistency: "local",
             stale: Some(true),
+            applied_index: None,
+            applied_term: None,
         })),
         Err(()) => Err(axum::http::StatusCode::SERVICE_UNAVAILABLE),
     }
+}
+
+/// Explicit Standby service-offload read (`read_stale`). Requires
+/// `ClusterConfig::enable_stale_queries` on the local node.
+async fn group_stale_value(
+    State(state): State<Arc<DemoState>>,
+    Path(id): Path<u64>,
+) -> Result<axum::Json<GroupValueResp>, (StatusCode, Json<ErrResp>)> {
+    if !state.group_ids.contains(&id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("unknown group {id}"),
+            }),
+        ));
+    }
+    for n in &state.nodes {
+        match n.read_stale(id, |fsm| fsm.value(id)).await {
+            Ok(r) => {
+                return Ok(axum::Json(GroupValueResp {
+                    group: id,
+                    value: r.value,
+                    leader: n.leader(id),
+                    consistency: "stale",
+                    stale: Some(true),
+                    applied_index: Some(r.applied_index),
+                    applied_term: Some(r.applied_term),
+                }));
+            }
+            Err(MultiRaftError::StaleQueriesDisabled) => continue,
+            Err(MultiRaftError::UnknownGroup(_)) => continue,
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(ErrResp {
+            ok: false,
+            error: "stale queries disabled on this node".into(),
+        }),
+    ))
 }
 
 async fn metrics_links(State(state): State<Arc<DemoState>>) -> axum::Json<LinksResp> {

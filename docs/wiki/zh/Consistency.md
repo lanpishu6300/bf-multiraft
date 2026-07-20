@@ -10,7 +10,8 @@
 |-----|------|
 | `propose` → Ok | **Linearizable 写**（多数派 commit + apply） |
 | `read_linearizable` | **Linearizable 读**（ReadIndex） |
-| `with_fsm` | 本地 / 可能 stale — 仅调试 |
+| `read_stale` | 本地 + applied 水位（`enable_stale_queries`）；Standby 卸载 — 非 linearizable |
+| `with_fsm` | 本地 / 可能 stale — 调试 / 指标 |
 | 跨 Group | 无跨 symbol 事务 |
 
 超时 / 断连的 `propose` 为**不确定写** — 须用同一幂等键重试。

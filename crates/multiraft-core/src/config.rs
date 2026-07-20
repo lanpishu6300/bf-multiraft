@@ -61,6 +61,9 @@ pub struct ClusterConfig {
     /// (e.g. `"http://127.0.0.1:23103"`) instead of only following the leader.
     /// Path used: `{base}/snapshots/{group}/latest`.
     pub daisy_upstream_base: Option<String>,
+    /// Allow local stale FSM queries on this node (Standby service offload).
+    /// `for_test` defaults to `false`; enable for Standby (or any analytics replica).
+    pub enable_stale_queries: bool,
 }
 
 impl ClusterConfig {
@@ -94,6 +97,14 @@ impl ClusterConfig {
             snapshot_fetch_chunk_bytes: 65_536,
             daisy_sync_interval_ms: 2_000,
             daisy_upstream_base: None,
+            enable_stale_queries: false,
         }
+    }
+
+    /// Enable local stale queries (typically called after setting [`Self::role`]
+    /// to [`NodeRole::Standby`]).
+    pub fn with_stale_queries(mut self, enabled: bool) -> Self {
+        self.enable_stale_queries = enabled;
+        self
     }
 }

@@ -13,6 +13,9 @@ pub enum MultiRaftError {
     #[error("unknown group {0}")]
     UnknownGroup(u64),
 
+    #[error("stale queries disabled (set ClusterConfig::enable_stale_queries)")]
+    StaleQueriesDisabled,
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -23,4 +26,14 @@ pub enum MultiRaftError {
 pub struct ProposeOk {
     pub index: u64,
     pub term: u64,
+}
+
+/// Result of a local FSM read for Standby service offload.
+///
+/// Never linearizable: `applied_index` is this node's last applied log only.
+#[derive(Debug, Clone)]
+pub struct StaleRead<T> {
+    pub value: T,
+    pub applied_index: u64,
+    pub applied_term: u64,
 }

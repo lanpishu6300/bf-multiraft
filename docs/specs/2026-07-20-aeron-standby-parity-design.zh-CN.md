@@ -37,7 +37,7 @@
 | A10 | 多 Standby / 选择性服务 | 单 Standby | 多 learner + `best_snapshot_ad` 选最新 | **P2** |
 | A11 | Archive 语义 | 目录 catalog | **HTTP Range** 分块拉取 + 断点续传 + sha256 | **P2** |
 | A12 | Backup query / 鉴权 / Tool | — | 更丰富 admin；鉴权后期 | P2 |
-| A13 | Standby 上跑慢查询服务 | — | 只读 FSM 钩子 | P3 |
+| A13 | Standby 上跑慢查询服务 | — | `read_stale` + `enable_stale_queries` | **P3** |
 
 ---
 
@@ -131,14 +131,25 @@ Standby B 可仅为快照节点（测试中不必 `add_learner`）：从 A 的 `
 
 验收与测试：`standby_p2.rs`；Demo：`STANDBY=2` / `DAISY=1` / `DAISY_UPSTREAM=...`。
 
-## 6–7. P3 / 非目标
+## 6. P3 — 服务卸载（已实现）
 
-见英文版（只读卸载；不做 Aeron 整栈替换）。
+Standby（或打开开关的节点）对本地 FSM 提供只读查询，并返回 applied 水位；**非** linearizable。
+
+```text
+enable_stale_queries: bool
+read_stale(group, f) -> StaleRead { value, applied_index, applied_term }
+```
+
+Demo：`GET /groups/{id}/stale`；测试：`standby_p3.rs`。细节见英文版。
+
+## 7. 非目标
+
+不做 Aeron 整栈替换 / Media Driver / 无人值守跨 DC 切换。见英文版。
 
 ---
 
-## 8. 成功标准（P2 结束）
+## 8–9. 成功标准（P3 结束）
 
-- 双语设计文档含商业版矩阵与阶段（至 P2）。  
-- P0+P1+P2 API 与自动化测试就绪。  
-- Demo：`STANDBY=1` 恢复路径；可选 promote；可选 daisy 快照链。
+- 双语设计文档含商业版矩阵与阶段（至 P3）。  
+- P0–P3 API 与自动化测试就绪。  
+- Demo：`STANDBY=1` 恢复；可选 promote / daisy；Standby `GET /groups/{id}/stale`。

@@ -37,7 +37,7 @@ Constraints:
 | A10 | Multi-standby / selective services | Single standby | Multi learner + `best_snapshot_ad` newest pick | **P2** |
 | A11 | Archive recording semantics | Directory catalog | **HTTP Range** chunked fetch + resume temp + sha256 | **P2** |
 | A12 | Backup query / auth / PremiumClusterTool | — | Ops CLI / richer admin; auth out of scope | P2 |
-| A13 | Clustered services on standby (slow query) | — | Pluggable read-only FSM hooks | P3 |
+| A13 | Clustered services on standby (slow query) | — | `read_stale` + `enable_stale_queries` | **P3** |
 
 ---
 
@@ -203,9 +203,41 @@ Tests: `crates/multiraft-net/tests/standby_p2.rs`. Demo: `STANDBY=2` / `DAISY=1`
 
 ---
 
-## 6. Phase P3 — Service offload
+## 6. Phase P3 — Service offload (**specified + implemented**)
 
-Allow Standby to register **read-only** query handlers against local FSM (`with_fsm`) with explicit stale semantics — not linearizable. Out of scope for P0/P1 code.
+Standby (or any node with the flag) serves **read-only** queries against the local FSM with an explicit applied watermark. Not linearizable.
+
+**Config**
+
+```rust
+ClusterConfig {
+  /// Default false in `for_test`; demo sets true when `--role standby`.
+  enable_stale_queries: bool,
+}
+```
+
+**API**
+
+```text
+MultiRaft::read_stale(group, f) -> Result<StaleRead<R>>
+  StaleRead { value, applied_index, applied_term }
+MultiRaft::local_applied(group) -> Option<(index, term)>
+MultiRaft::stale_queries_enabled() -> bool
+```
+
+**Behavior**
+
+- If `enable_stale_queries` is false → `MultiRaftError::StaleQueriesDisabled`.
+- Closure `f` runs under the same FSM lock as `with_fsm` (read-only by convention).
+- Demo: `GET /groups/{id}/stale` (403 when disabled); Standby also serves stale on `GET /groups/{id}/value`.
+
+**Acceptance (P3)**
+
+1. Learner Standby with flag on: after catch-up, `read_stale` returns value matching leader linearizable read and `applied_index > 0`.
+2. Voter with flag off: `read_stale` returns `StaleQueriesDisabled`.
+3. Optional: voter with flag on can host analytics-style local reads.
+
+Tests: `crates/multiraft-net/tests/standby_p3.rs`.
 
 ---
 
@@ -228,12 +260,13 @@ Allow Standby to register **read-only** query handlers against local FSM (`with_
 | `pull_and_install_snapshot` / `try_recover_from_standby_ads` | P0 |
 | `promote_standby` / `demote_to_standby` | P1 |
 | `daisy_upstream_base` / `sync_from_daisy_upstream` / Range fetch | P2 |
-| Tests `standby_snapshot` + `standby_premium` + `standby_p2` | P0/P1/P2 |
+| `read_stale` / `enable_stale_queries` / `StaleRead` | P3 |
+| Tests `standby_snapshot` + `standby_premium` + `standby_p2` + `standby_p3` | P0–P3 |
 
 ---
 
-## 9. Success criteria (end of P2)
+## 9. Success criteria (end of P3)
 
-- Design docs (EN+zh-CN) describe Aeron matrix and phases through P2.
-- P0+P1+P2 APIs implemented and covered by automated tests.
-- Demo can: `STANDBY=1` → trigger → restart voter → auto recover; optional promote; optional `DAISY=1` snapshot chain.
+- Design docs (EN+zh-CN) describe Aeron matrix and phases through P3.
+- P0–P3 APIs implemented and covered by automated tests.
+- Demo can: `STANDBY=1` → trigger → restart voter → auto recover; optional promote; optional `DAISY=1` snapshot chain; Standby `GET /groups/{id}/stale`.
