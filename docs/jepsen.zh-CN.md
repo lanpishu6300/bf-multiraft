@@ -13,10 +13,12 @@
 | `read_linearizable(group, f)` | **Linearizable 读**（ReadIndex）：确认领导权后，对本地 FSM 执行 `f`。 |
 | 非 Leader 的 `propose` / `read_linearizable` | 返回 `MultiRaftError::NotLeader { hint }`。调用方须在 Leader（或切主后其他节点）重试。 |
 | `with_fsm(group, f)` | **本地 / 可能 stale。** 仅调试、指标或末级 Admin 回退 — 非业务真值。 |
+| `read_stale(group, f)` | **Standby 卸载 / 本地。** 需 `enable_stale_queries`；带 applied 水位，**非** linearizable — Jepsen 拒绝 `"consistency":"stale"`。 |
 
 Demo Admin：
 
-- `GET /groups/{id}/value` — 优先 `read_linearizable`；JSON 含 `"consistency": "linearizable"` 或 `"local"` / `"stale": true`，或 HTTP 503。
+- `GET /groups/{id}/value` — 优先 `read_linearizable`；JSON 含 `"consistency": "linearizable"` 或 `"local"` / `"stale"`（Standby 卸载），或 HTTP 503。
+- `GET /groups/{id}/stale` — 显式 Standby 卸载读。
 - `POST /groups/{id}/inc` — body `{"delta":1,"idem":null}`；在本地 Leader 上 propose `CounterFsm::encode_add`（跨本地节点 NotLeader 重试）。配合 `--no-auto-propose`，避免后台 propose 循环与 Jepsen 客户端竞态。
 
 ## Porcupine 测试（CI 门禁）

@@ -116,3 +116,58 @@ impl StandbyThrottle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_config_seeds_ids_and_knobs() {
+        let mut cfg = ClusterConfig::for_test(1, &[1, 2, 3, 4]);
+        cfg.standby_node_ids = vec![4];
+        cfg.standby_replicate_delay_ms = 25;
+        cfg.standby_max_inflight = 3;
+        let t = StandbyThrottle::from_config(&cfg);
+        assert!(t.contains(4));
+        assert!(!t.contains(2));
+        assert_eq!(t.inner.delay_ms.load(Ordering::Relaxed), 25);
+        assert_eq!(t.inner.max_inflight.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn insert_remove_updates_set() {
+        let t = StandbyThrottle::default();
+        t.insert(9);
+        assert!(t.contains(9));
+        t.remove(9);
+        assert!(!t.contains(9));
+        assert!(t.standby_ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn before_send_none_for_voter() {
+        let t = StandbyThrottle::default();
+        t.insert(4);
+        assert!(t.before_send(2).await.is_none());
+        let permit = t.before_send(4).await;
+        assert!(permit.is_some());
+    }
+
+    #[tokio::test]
+    async fn max_inflight_gates_standby() {
+        let mut cfg = ClusterConfig::for_test(1, &[1, 2, 3, 4]);
+        cfg.standby_node_ids = vec![4];
+        cfg.standby_max_inflight = 1;
+        cfg.standby_replicate_delay_ms = 0;
+        let t = StandbyThrottle::from_config(&cfg);
+        let p1 = t.before_send(4).await.expect("first permit");
+        let second = tokio::time::timeout(Duration::from_millis(50), t.before_send(4)).await;
+        assert!(second.is_err(), "second acquire should block while first held");
+        drop(p1);
+        let p2 = tokio::time::timeout(Duration::from_millis(200), t.before_send(4))
+            .await
+            .expect("timeout")
+            .expect("second permit after release");
+        drop(p2);
+    }
+}

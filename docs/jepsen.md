@@ -14,10 +14,12 @@ in-process porcupine linearizability test, and the **local Jepsen** suite under
 | `read_linearizable(group, f)` | **Linearizable read** via ReadIndex: confirms leadership, then applies `f` to the local FSM. |
 | Non-leader `propose` / `read_linearizable` | Returns `MultiRaftError::NotLeader { hint }`. Callers must retry on the leader (or another node after failover). |
 | `with_fsm(group, f)` | **Local / may be stale.** Debug, metrics, or last-resort admin fallback only — not application truth. |
+| `read_stale(group, f)` | **Standby offload / local.** Requires `enable_stale_queries`. Returns applied watermark; **not** linearizable — Jepsen rejects `"consistency":"stale"`. |
 
 Demo admin:
 
-- `GET /groups/{id}/value` — prefer `read_linearizable`; JSON includes `"consistency": "linearizable"` or `"local"` / `"stale": true`, or HTTP 503.
+- `GET /groups/{id}/value` — prefer `read_linearizable`; JSON includes `"consistency": "linearizable"` or `"local"` / `"stale"` (Standby offload), or HTTP 503.
+- `GET /groups/{id}/stale` — explicit Standby offload read (`enable_stale_queries`).
 - `POST /groups/{id}/inc` — body `{"delta":1,"idem":null}`; proposes `CounterFsm::encode_add` on a local leader (NotLeader retry across local nodes). Use with `--no-auto-propose` so the background propose loop does not race Jepsen clients.
 
 ## Porcupine test (CI gate)
@@ -87,6 +89,8 @@ Reports land under `jepsen/multiraft/store/latest/` (`results.edn`, `history.edn
 NO_AUTO_PROPOSE=1 GROUPS=1 ./scripts/run_demo_cluster.sh
 # or
 JEPSEN=1 GROUPS=1 ./scripts/run_demo_cluster.sh
+# Optional Learner Standby (node 4); clients/nemesis still use voters 1..3 only:
+STANDBY=1 JEPSEN=1 GROUPS=1 ./scripts/run_jepsen.sh
 ```
 
 Equivalent CLI: `multiraft-demo --no-auto-propose ...`.
@@ -97,7 +101,8 @@ Equivalent CLI: `multiraft-demo --no-auto-propose ...`.
 | --- | --- |
 | Porcupine on in-process propose + `read_linearizable` under one leader kill | Network partitions / netem |
 | Local Jepsen counter + process kill/restart (smoke via `run_jepsen.sh`) | Multi-hour / multi-datacenter Jepsen |
-| Chaos failover scripts (`chaos.sh`) | Disk-full, Byzantine faults |
+| Optional `STANDBY=1` during Jepsen (Standby stays up; nemesis kills voters only; stale reads rejected) | Jepsen ops against Standby stale endpoint |
+| Chaos failover + Standby chaos (`chaos_standby`, `SCENARIO=standby`) | Disk-full, Byzantine faults |
 | Demo admin prefers linearizable reads; `/inc` for client-driven counters | That every admin caller honors `"stale": true` |
 
 Porcupine remains the fast CI gate; local Jepsen exercises the real multi-process

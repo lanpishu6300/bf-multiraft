@@ -103,6 +103,10 @@
         (and (= 200 status) (= "local" (:consistency body)))
         [:fail {:error :stale :value (:value body)}]
 
+        ;; Standby service offload — never feed into checker/counter.
+        (and (= 200 status) (= "stale" (:consistency body)))
+        [:fail {:error :stale-offload :value (:value body)}]
+
         :else
         [:fail {:status status :body body}]))
     (catch Throwable t

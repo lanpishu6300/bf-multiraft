@@ -22,6 +22,15 @@ From the multiraft repo root:
 This builds the demo, starts a 3-node cluster with `NO_AUTO_PROPOSE=1` / `GROUPS=1`,
 runs a ~30s counter test with a kill/restart nemesis, then tears the cluster down.
 
+Optional Standby (Learner, not in the Jepsen `:nodes` set):
+
+```bash
+STANDBY=1 ./scripts/run_jepsen.sh
+```
+
+Clients only accept `"consistency":"linearizable"` reads; `"stale"` / `"local"` are
+treated as failures. The nemesis kills/restarts voters `1..NODES` only.
+
 ## Manual
 
 ```bash
