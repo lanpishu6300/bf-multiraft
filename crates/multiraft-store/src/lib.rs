@@ -5,12 +5,18 @@
 
 mod log_file;
 mod log_mem;
+mod snapshot_catalog;
 mod sm_bridge;
 pub mod stub_network;
 
 pub use log_file::FileLogStore;
 pub use log_mem::LogStore;
+pub use snapshot_catalog::CatalogEntry;
+pub use snapshot_catalog::SnapshotCatalog;
+pub use sm_bridge::SmOptions;
 pub use sm_bridge::StateMachineStore;
+pub use sm_bridge::TriggerCb;
+pub use sm_bridge::build_standby_snapshot_async;
 pub use stub_network::StubNetworkFactory;
 
 pub use multiraft_core::GroupId;

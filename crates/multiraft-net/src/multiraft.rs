@@ -19,8 +19,11 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use openraft::BasicNode;
@@ -43,17 +46,91 @@ use multiraft_core::ClusterConfig;
 use multiraft_core::GroupId;
 use multiraft_core::MultiRaftError;
 use multiraft_core::NodeId;
+use multiraft_core::NodeRole;
 use multiraft_core::ProposeOk;
 use multiraft_core::Request;
+use multiraft_core::STANDBY_SNAPSHOT_TRIGGER;
+use multiraft_core::SnapshotAdvertisement;
+use multiraft_core::SnapshotMode;
 use multiraft_core::TypeConfig;
 use multiraft_fsm::CounterFsm;
 use multiraft_fsm::StateMachine;
+use multiraft_store::CatalogEntry;
 use multiraft_store::FileLogStoreOf;
 use multiraft_store::MemLogStore;
 use multiraft_store::Raft;
+use multiraft_store::SmOptions;
+use multiraft_store::SnapshotCatalog;
 use multiraft_store::StateMachineStore;
+use multiraft_store::TriggerCb;
 
 type LeaderCb = Arc<dyn Fn(u64, Option<u64>) + Send + Sync + 'static>;
+type SnapshotReadyCb = Arc<dyn Fn(SnapshotAdvertisement) + Send + Sync + 'static>;
+
+/// Shared snapshot catalog / ads for one MultiRaft node.
+struct SnapshotRuntime {
+    catalog: Option<Arc<SnapshotCatalog>>,
+    ads: Mutex<Vec<SnapshotAdvertisement>>,
+    serialize_delay: Mutex<Option<Duration>>,
+    data_dir: PathBuf,
+    admin_advertise_addr: Option<std::net::SocketAddr>,
+    on_snapshot_ready: Mutex<Option<SnapshotReadyCb>>,
+}
+
+impl SnapshotRuntime {
+    fn new(config: &ClusterConfig) -> Arc<Self> {
+        let catalog = if config.snapshot_mode == SnapshotMode::StandbyOffload
+            && !config.data_dir.as_os_str().is_empty()
+        {
+            let root = config.data_dir.join("snapshots");
+            let _ = fs::create_dir_all(&root);
+            Some(Arc::new(SnapshotCatalog::new(root, config.snapshot_keep)))
+        } else {
+            None
+        };
+        Arc::new(Self {
+            catalog,
+            ads: Mutex::new(Self::load_ads(&config.data_dir)),
+            serialize_delay: Mutex::new(None),
+            data_dir: config.data_dir.clone(),
+            admin_advertise_addr: config.admin_advertise_addr,
+            on_snapshot_ready: Mutex::new(None),
+        })
+    }
+
+    fn load_ads(data_dir: &std::path::Path) -> Vec<SnapshotAdvertisement> {
+        if data_dir.as_os_str().is_empty() {
+            return Vec::new();
+        }
+        let path = data_dir.join("snapshot_ads.json");
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn persist_ads(&self) {
+        if self.data_dir.as_os_str().is_empty() {
+            return;
+        }
+        let ads = self.ads.lock().unwrap().clone();
+        if let Ok(bytes) = serde_json::to_vec_pretty(&ads) {
+            let _ = fs::write(self.data_dir.join("snapshot_ads.json"), bytes);
+        }
+    }
+
+    fn record_ad(&self, ad: SnapshotAdvertisement) {
+        {
+            let mut ads = self.ads.lock().unwrap();
+            ads.retain(|a| !(a.group == ad.group && a.snapshot_id == ad.snapshot_id));
+            ads.push(ad.clone());
+        }
+        self.persist_ads();
+        if let Some(cb) = self.on_snapshot_ready.lock().unwrap().clone() {
+            cb(ad);
+        }
+    }
+}
 
 /// Coordinates `create_group` so membership is initialized once all peers are local.
 #[derive(Clone, Default)]
@@ -125,6 +202,7 @@ pub struct MultiRaft<S: StateMachine = CounterFsm> {
     groups: GroupMap<S>,
     make_fsm: Arc<dyn Fn(GroupId) -> S + Send + Sync>,
     leader_cbs: Arc<Mutex<Vec<LeaderCb>>>,
+    snapshot_rt: Arc<SnapshotRuntime>,
 }
 
 impl MultiRaft<CounterFsm> {
@@ -171,6 +249,7 @@ impl<S: StateMachine> MultiRaft<S> {
         let groups: GroupMap<S> = Arc::new(Mutex::new(BTreeMap::new()));
         let (node, _tx) = Node::with_groups(config.node_id, router.clone(), groups.clone());
         TypeConfig::spawn(node.run());
+        let snapshot_rt = SnapshotRuntime::new(&config);
 
         Ok(Self {
             node_id: config.node_id,
@@ -179,6 +258,7 @@ impl<S: StateMachine> MultiRaft<S> {
             groups,
             make_fsm: Arc::new(make_fsm),
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
+            snapshot_rt,
         })
     }
 
@@ -200,6 +280,7 @@ impl<S: StateMachine> MultiRaft<S> {
 
         let groups: GroupMap<S> = Arc::new(Mutex::new(BTreeMap::new()));
         let grpc_router = GrpcRouter::new(config.peers.clone(), config.node_id);
+        let snapshot_rt = SnapshotRuntime::new(&config);
 
         let groups_for_server = groups.clone();
         let listener = tokio::net::TcpListener::bind(self_addr).await?;
@@ -221,6 +302,7 @@ impl<S: StateMachine> MultiRaft<S> {
             groups,
             make_fsm: Arc::new(make_fsm),
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
+            snapshot_rt,
         })
     }
 
@@ -231,13 +313,18 @@ impl<S: StateMachine> MultiRaft<S> {
     ///
     /// **gRPC:** each process spawns the local raft then tries `initialize`;
     /// `NotAllowed` is ignored (no cross-process ClusterGlue).
+    ///
+    /// **Standby:** local node may be absent from `members` (voters only). Spawns
+    /// the local raft without calling `initialize`; join via [`Self::add_standby`].
     pub async fn create_group(&self, group: u64, members: &[u64]) -> Result<(), MultiRaftError> {
         if members.is_empty() {
             return Err(MultiRaftError::Other(anyhow::anyhow!(
                 "create_group requires at least one member"
             )));
         }
-        if !members.contains(&self.node_id) {
+
+        let is_standby = self.config.role == NodeRole::Standby;
+        if !is_standby && !members.contains(&self.node_id) {
             return Err(MultiRaftError::Other(anyhow::anyhow!(
                 "local node {} is not in members {:?}",
                 self.node_id,
@@ -248,6 +335,11 @@ impl<S: StateMachine> MultiRaft<S> {
         let needs_spawn = !self.groups.lock().unwrap().contains_key(&group);
         if needs_spawn {
             self.spawn_local_group(group).await?;
+        }
+
+        if is_standby {
+            // Learner: wait for leader `add_learner`; do not initialize.
+            return Ok(());
         }
 
         match &self.net {
@@ -264,6 +356,115 @@ impl<S: StateMachine> MultiRaft<S> {
         }
 
         Ok(())
+    }
+
+    /// Leader-only: add a Standby as an openraft Learner (`add_learner`, blocking).
+    pub async fn add_standby(&self, group: u64, standby_id: u64) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let addr = self
+            .config
+            .peers
+            .iter()
+            .find(|(n, _)| *n == standby_id)
+            .map(|(_, a)| a.to_string())
+            .unwrap_or_default();
+        let node = BasicNode { addr };
+        match raft.add_learner(standby_id, node, true).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let Some(fwd) = e.forward_to_leader() {
+                    return Err(MultiRaftError::NotLeader {
+                        hint: fwd.leader_id,
+                    });
+                }
+                Err(MultiRaftError::Other(anyhow::anyhow!("add_learner: {e}")))
+            }
+        }
+    }
+
+    /// Leader proposes the magic standby-snapshot trigger log entry.
+    pub async fn trigger_standby_snapshot(&self, group: u64) -> Result<ProposeOk, MultiRaftError> {
+        self.propose(group, STANDBY_SNAPSHOT_TRIGGER.to_vec()).await
+    }
+
+    /// Record a snapshot advertisement (persisted when `data_dir` is set).
+    pub fn record_snapshot_ad(&self, ad: SnapshotAdvertisement) {
+        self.snapshot_rt.record_ad(ad);
+    }
+
+    /// Return all locally known snapshot advertisements.
+    pub fn snapshot_ads(&self) -> Vec<SnapshotAdvertisement> {
+        self.snapshot_rt.ads.lock().unwrap().clone()
+    }
+
+    /// Optional callback when a Standby finishes an async snapshot.
+    pub fn on_snapshot_ready<F>(&self, cb: F)
+    where
+        F: Fn(SnapshotAdvertisement) + Send + Sync + 'static,
+    {
+        *self.snapshot_rt.on_snapshot_ready.lock().unwrap() = Some(Arc::new(cb));
+    }
+
+    /// Test hook: artificial delay inside `spawn_blocking` serialize/fsync.
+    pub fn set_snapshot_serialize_delay(&self, delay: Option<Duration>) {
+        *self.snapshot_rt.serialize_delay.lock().unwrap() = delay;
+    }
+
+    /// Durable catalog for this node (StandbyOffload + data_dir), if any.
+    pub fn snapshot_catalog(&self) -> Option<Arc<SnapshotCatalog>> {
+        self.snapshot_rt.catalog.clone()
+    }
+
+    /// Latest catalog entry for `group` on this node.
+    pub fn latest_catalog_entry(&self, group: GroupId) -> Option<CatalogEntry> {
+        self.snapshot_rt
+            .catalog
+            .as_ref()?
+            .latest(group)
+            .ok()
+            .flatten()
+    }
+
+    /// Install durable snapshot bytes into the local state machine (recovery).
+    pub async fn install_durable_snapshot(
+        &self,
+        group: GroupId,
+        last_index: u64,
+        last_term: u64,
+        data: Vec<u8>,
+    ) -> Result<(), MultiRaftError> {
+        let sm = self
+            .groups
+            .lock()
+            .unwrap()
+            .get(&group)
+            .map(|g| g.state_machine.clone())
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        sm.install_durable_snapshot(last_index, last_term, true, data)
+            .await
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("install_durable_snapshot: {e}")))
+    }
+
+    /// Pull snapshot bytes from a Standby's catalog (in-process helper) and install.
+    pub async fn try_install_from_standby_catalog(
+        &self,
+        group: GroupId,
+        standby_catalog: &SnapshotCatalog,
+    ) -> Result<(), MultiRaftError> {
+        let entry = standby_catalog
+            .latest(group)
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("catalog latest: {e}")))?
+            .ok_or_else(|| {
+                MultiRaftError::Other(anyhow::anyhow!("no snapshot in standby catalog"))
+            })?;
+        let data = standby_catalog
+            .read(group, &entry.snapshot_id)
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("catalog read: {e}")))?
+            .ok_or_else(|| MultiRaftError::Other(anyhow::anyhow!("snapshot data missing")))?;
+        self.install_durable_snapshot(group, entry.last_index, entry.last_term, data)
+            .await
     }
 
     async fn try_initialize(
@@ -460,11 +661,18 @@ impl<S: StateMachine> MultiRaft<S> {
     }
 
     async fn spawn_local_group(&self, group: GroupId) -> Result<(), MultiRaftError> {
+        let snapshot_policy = if self.config.snapshot_mode == SnapshotMode::StandbyOffload {
+            // Voters/standby never auto hot-snapshot; Standby builds via trigger log.
+            openraft::SnapshotPolicy::Never
+        } else {
+            openraft::SnapshotPolicy::LogsSinceLast(5000)
+        };
         let config = Config {
             heartbeat_interval: self.config.heartbeat_interval_ms,
             election_timeout_min: self.config.election_timeout_min_ms,
             election_timeout_max: self.config.election_timeout_max_ms,
             max_in_snapshot_log_to_keep: 0,
+            snapshot_policy,
             ..Default::default()
         };
         let config = Arc::new(
@@ -474,7 +682,79 @@ impl<S: StateMachine> MultiRaft<S> {
         );
 
         let fsm = (self.make_fsm)(group);
-        let state_machine_store = StateMachineStore::new(group, fsm);
+        // StandbyOffload: never hot-dump FSM in openraft build_snapshot (voters or standby).
+        let allow_hot_build = self.config.snapshot_mode != SnapshotMode::StandbyOffload;
+
+        let sm_holder: Arc<OnceLock<StateMachineStore<S>>> = Arc::new(OnceLock::new());
+        let on_standby_trigger = if self.config.role == NodeRole::Standby
+            && self.config.snapshot_mode == SnapshotMode::StandbyOffload
+        {
+            let catalog = self.snapshot_rt.catalog.clone().ok_or_else(|| {
+                MultiRaftError::Other(anyhow::anyhow!(
+                    "StandbyOffload Standby requires non-empty data_dir for SnapshotCatalog"
+                ))
+            })?;
+            let rt = self.snapshot_rt.clone();
+            let holder = sm_holder.clone();
+            let trigger: TriggerCb = Arc::new(move |gid, index, term| {
+                let catalog = catalog.clone();
+                let rt = rt.clone();
+                let holder = holder.clone();
+                TypeConfig::spawn(async move {
+                    let Some(sm) = holder.get() else {
+                        tracing::warn!(group = gid, "standby trigger before SM ready");
+                        return;
+                    };
+                    let delay = *rt.serialize_delay.lock().unwrap();
+                    match sm
+                        .build_standby_snapshot_async(&catalog, gid, index, term, delay)
+                        .await
+                    {
+                        Ok(entry) => {
+                            let fetch_url = rt
+                                .admin_advertise_addr
+                                .map(|addr| {
+                                    format!("http://{addr}/snapshots/{gid}/latest")
+                                })
+                                .unwrap_or_default();
+                            let ad = SnapshotAdvertisement {
+                                group: gid,
+                                last_index: entry.last_index,
+                                last_term: entry.last_term,
+                                snapshot_id: entry.snapshot_id,
+                                size: entry.size,
+                                sha256_hex: entry.sha256_hex,
+                                fetch_url,
+                            };
+                            rt.record_ad(ad);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                group = gid,
+                                index,
+                                term,
+                                error = %e,
+                                "standby async snapshot failed"
+                            );
+                        }
+                    }
+                });
+            });
+            Some(trigger)
+        } else {
+            None
+        };
+
+        let state_machine_store = StateMachineStore::with_options(
+            group,
+            fsm,
+            SmOptions {
+                allow_hot_build,
+                catalog: self.snapshot_rt.catalog.clone(),
+                on_standby_trigger,
+            },
+        );
+        let _ = sm_holder.set(state_machine_store.clone());
 
         let raft = match &self.net {
             NetBackend::InProcess { router, .. } => {
