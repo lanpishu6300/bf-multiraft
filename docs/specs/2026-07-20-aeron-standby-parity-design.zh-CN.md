@@ -32,10 +32,10 @@
 | A5 | Voter 重启懒拉取 | 测试内 catalog 拷贝 | **ad 更新时自动 HTTP 拉 `fetch_url`** | **P0** |
 | A6 | 按需 replicate 工具 | Demo curl | Admin `POST /admin/replicate_standby_snapshot` | P0 |
 | A7 | Standby 不反压 Leader | 未控制 | **对 standby peer 限速/限并发复制** | **P0** |
-| A8 | Daisy-chain | — | Standby 可从另一 Standby 跟 log | P2 |
+| A8 | Daisy-chain | — | **快照 daisy**：`daisy_upstream_base`（非完整 openraft log 重定向） | **P2** |
 | A9 | Warm DR / TransitionModule | — | **`promote_standby` Learner→Voter**（+ demote） | **P1** |
-| A10 | 多 Standby / 选择性服务 | 单 Standby | 多 learner + per-group 开关 | P2 |
-| A11 | Archive 语义 | 目录 catalog | 流式拉取、续传（已有 sha256） | P1/P2 |
+| A10 | 多 Standby / 选择性服务 | 单 Standby | 多 learner + `best_snapshot_ad` 选最新 | **P2** |
+| A11 | Archive 语义 | 目录 catalog | **HTTP Range** 分块拉取 + 断点续传 + sha256 | **P2** |
 | A12 | Backup query / 鉴权 / Tool | — | 更丰富 admin；鉴权后期 | P2 |
 | A13 | Standby 上跑慢查询服务 | — | 只读 FSM 钩子 | P3 |
 
@@ -101,14 +101,44 @@ demote_to_standby(group, id) → change_membership(voters \ {id}, retain learner
 
 ---
 
-## 5–7. P2 / P3 / 非目标
+## 5. 阶段 P2 — Daisy-chain / 多 Standby / 流式拉取（**已规定并实现**）
 
-见英文版 §5–7（Daisy-chain、多 Standby、只读卸载；不做 Aeron 整栈替换）。
+### 5.1 多 Standby
+
+- Leader 可多次 `add_standby`。
+- `try_recover_from_standby_ads` / `best_snapshot_ad(group)` 按 `(last_term, last_index)` 取最新。
+
+### 5.2 Daisy-chain（快照带宽近似）
+
+```rust
+pub daisy_upstream_base: Option<String>, // e.g. "http://127.0.0.1:23103"
+pub daisy_sync_interval_ms: u64,         // default 2000
+```
+
+```text
+sync_from_daisy_upstream(group) -> RecoverOutcome
+spawn_daisy_sync_loop(groups)   // daisy_upstream_base 已设置时后台同步
+```
+
+Standby B 可仅为快照节点（测试中不必 `add_learner`）：从 A 的 `{base}/snapshots/{group}/latest` 拉取 → 写入本地 catalog → 安装 FSM → `record_snapshot_ad`（`admin_advertise_addr`）。
+
+**限制：** 这是**快照链**，不是 Aeron 式 log daisy / openraft AppendEntries 重定向。
+
+### 5.3 流式 / Range 续传
+
+- `GET /snapshots/:id/latest` 支持 `Range` → `206` + `Content-Range`。
+- `pull_and_install_snapshot` 经 `pull_snapshot_chunked`（`snapshot_fetch_chunk_bytes`，默认 64KiB）写入临时文件并可续传，校验 sha256 后安装。
+
+验收与测试：`standby_p2.rs`；Demo：`STANDBY=2` / `DAISY=1` / `DAISY_UPSTREAM=...`。
+
+## 6–7. P3 / 非目标
+
+见英文版（只读卸载；不做 Aeron 整栈替换）。
 
 ---
 
-## 8. 成功标准（P1 结束）
+## 8. 成功标准（P2 结束）
 
-- 双语设计文档含商业版矩阵与阶段。  
-- P0+P1 API 与自动化测试就绪。  
-- Demo：`STANDBY=1` → trigger → 重启 voter → 按 ad 自动恢复 → 可选 promote。
+- 双语设计文档含商业版矩阵与阶段（至 P2）。  
+- P0+P1+P2 API 与自动化测试就绪。  
+- Demo：`STANDBY=1` 恢复路径；可选 promote；可选 daisy 快照链。

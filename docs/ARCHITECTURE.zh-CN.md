@@ -93,9 +93,12 @@ RMQ (per-symbol)
 详情：[specs/2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md)
 · [English](./specs/2026-07-20-standby-async-snapshot-design.md)。
 
-Premium 对等（从 ad HTTP 拉取、standby 复制限速、promote/demote）：
+Premium 对等（从 ad HTTP 拉取、standby 复制限速、promote/demote、多 Standby 选最新 ad、
+经 `daisy_upstream_base` 的**快照 daisy-chain**、HTTP Range 分块续传）：
 [specs/2026-07-20-aeron-standby-parity-design.zh-CN.md](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md)
 · [English](./specs/2026-07-20-aeron-standby-parity-design.md)。
+
+P2 daisy 是**快照分发链**（不是 openraft log 重定向）。
 
 ## 上游锁定
 
