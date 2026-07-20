@@ -3,14 +3,17 @@
 **English：** [2026-07-20-standby-async-snapshot-design.md](./2026-07-20-standby-async-snapshot-design.md)
 
 **日期：** 2026-07-20  
-**状态：** 已在 `multiraft` 落地  
-**相关：** [ARCHITECTURE.zh-CN.md](../ARCHITECTURE.zh-CN.md) · openraft `=0.10.0-alpha.30`
+**状态：** MVP 已在 `multiraft` 落地  
+**相关：** [ARCHITECTURE.zh-CN.md](../ARCHITECTURE.zh-CN.md) · openraft `=0.10.0-alpha.30`  
+**商业版差距 / 路线图：** [Aeron Standby 对标](./2026-07-20-aeron-standby-parity-design.zh-CN.md)
 
 ---
 
 ## 目标
 
-把 FSM 快照序列化从 Raft **Voter** 卸载到 **Standby**（openraft Learner），避免 Leader 热路径被同步 dump 阻塞。思路对齐 Aeron archive / 专用快照节点。
+把 FSM 快照序列化从 Raft **Voter** 卸载到 **Standby**（openraft Learner），避免 Leader 热路径被同步 dump 阻塞。思路对齐 Aeron Cluster Standby 快照。
+
+本文为 **MVP**。完整商业版对标（自动拉取、限速、Transition、Daisy-chain）见 [对标设计](./2026-07-20-aeron-standby-parity-design.zh-CN.md)。
 
 ## 架构
 
