@@ -8,3 +8,5 @@ jepsen/multiraft/.cpcache/
 jepsen/multiraft/target/
 **/*.rs.bk
 .DS_Store
+
+.cursor/
