@@ -2,8 +2,6 @@
 
 **中文：** [2026-07-18-multiraft.zh-CN.md](./2026-07-18-multiraft.zh-CN.md)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Deliver independent repo `multiraft`: openraft + openraft-multi thin Multi-Raft runtime with ≥10 groups, shared connections, 3-node failover that does not lose committed commands.
 
 **Architecture:** One openraft instance per `GroupId`; shared `GroupRouter` for peer RPC; pluggable `StateMachine` trait; static 3-node membership. Phase-1 demo injects proposes locally (no RMQ). Reference implementation pattern: [openraft `examples/multi-raft-kv`](https://github.com/databendlabs/openraft/tree/main/examples/multi-raft-kv).
@@ -12,7 +10,7 @@
 
 **Spec:** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
 
-**Workdir:** `$REPO_ROOT` (new git repo). Always `export PATH="$HOME/.cargo/bin:$PATH"`.
+**Workdir:** repository root (ensure `cargo` is on `PATH`).
 
 **Upstream reference (clone once for reading, do not vendor whole TiKV):**
 ```bash
@@ -322,7 +320,7 @@ EOF
 - Create: `crates/multiraft-store/` (full crate)
 - Create: `crates/multiraft-core/src/type_config.rs` (or under store)
 
-**Procedure (do not invent OpenRaft 0.10 traits from memory):**
+**Procedure (follow the pinned openraft tag; do not guess API names):**
 
 - [ ] **Step 1: Clone reference at pinned tag** (see Workdir section).
 
@@ -341,7 +339,7 @@ Rename groups from string `"users"` to `GroupId: u64`. Keep openraft trait impls
 // Assert: after client_write, CounterFsm value == expected.
 ```
 
-Exact bootstrap code must be transcribed from upstream `tests/cluster/test_cluster.rs` (API names change between alphas — copy from the pinned tag, then rename).
+Bootstrap from upstream `tests/cluster/test_cluster.rs` at the pinned tag (API names change between alphas — copy, then rename).
 
 - [ ] **Step 4: `cargo test -p multiraft-store` PASS**
 

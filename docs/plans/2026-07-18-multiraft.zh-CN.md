@@ -2,8 +2,7 @@
 
 **English：** [2026-07-18-multiraft.md](./2026-07-18-multiraft.md)
 
-> **说明：** 英文版为 agent 执行的规范来源（canonical）；本中文版供人工阅读。  
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **说明：** 英文版为规范来源（canonical）；本中文版供阅读对照。
 
 **目标：** 交付独立仓库 `multiraft`：基于 openraft + openraft-multi 的薄 Multi-Raft 运行时，≥10 Group、共享连接、3 节点切主且不丢失已 commit 命令。
 
@@ -13,7 +12,7 @@
 
 **规格：** [`docs/specs/2026-07-18-multiraft-design.md`](../specs/2026-07-18-multiraft-design.md) · [中文](../specs/2026-07-18-multiraft-design.zh-CN.md)
 
-**工作目录：** `$REPO_ROOT`（新 git 仓库）。始终 `export PATH="$HOME/.cargo/bin:$PATH"`。
+**工作目录：** 仓库根目录（确保 `cargo` 在 `PATH` 中）。
 
 **上游参考（只克隆阅读，不要整仓 vendor TiKV）：**
 ```bash

@@ -56,6 +56,7 @@ use multiraft_core::Request;
 use multiraft_core::STANDBY_SNAPSHOT_TRIGGER;
 use multiraft_core::SnapshotAdvertisement;
 use multiraft_core::SnapshotMode;
+use multiraft_core::StaleRead;
 use multiraft_core::TypeConfig;
 use multiraft_fsm::CounterFsm;
 use multiraft_fsm::StateMachine;
@@ -836,7 +837,8 @@ impl<S: StateMachine> MultiRaft<S> {
     /// Linearizable read: confirm leadership (ReadIndex), then read the local FSM.
     ///
     /// Non-leader → [`MultiRaftError::NotLeader`]. Use this for order-status / truth
-    /// reads. For debug-only stale reads, use [`Self::with_fsm`].
+    /// reads. For Standby offload / debug local reads, use [`Self::read_stale`] or
+    /// [`Self::with_fsm`].
     pub async fn read_linearizable<R>(
         &self,
         group: u64,
@@ -964,6 +966,7 @@ impl<S: StateMachine> MultiRaft<S> {
     ///
     /// May be stale relative to the cluster. Prefer [`Self::read_linearizable`] for
     /// application truth reads; keep this for tests / metrics / debug.
+    /// For Standby service offload with an applied watermark, use [`Self::read_stale`].
     pub async fn with_fsm<R>(&self, group: GroupId, f: impl FnOnce(&S) -> R) -> Option<R> {
         let sm = self
             .groups
@@ -972,6 +975,50 @@ impl<S: StateMachine> MultiRaft<S> {
             .get(&group)
             .map(|g| g.state_machine.clone())?;
         Some(sm.with_fsm(f).await)
+    }
+
+    /// Local FSM read for Standby (or other) service offload.
+    ///
+    /// Requires [`ClusterConfig::enable_stale_queries`]. Returns the value plus this
+    /// node's last applied `(index, term)`. **Not** linearizable — callers must
+    /// treat the result as eventually consistent / possibly behind the leader.
+    pub async fn read_stale<R>(
+        &self,
+        group: GroupId,
+        f: impl FnOnce(&S) -> R,
+    ) -> Result<StaleRead<R>, MultiRaftError> {
+        if !self.config.enable_stale_queries {
+            return Err(MultiRaftError::StaleQueriesDisabled);
+        }
+        let sm = self
+            .groups
+            .lock()
+            .unwrap()
+            .get(&group)
+            .map(|g| g.state_machine.clone())
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let (applied_index, applied_term) = self.local_applied(group).unwrap_or((0, 0));
+        let value = sm.with_fsm(f).await;
+        Ok(StaleRead {
+            value,
+            applied_index,
+            applied_term,
+        })
+    }
+
+    /// Last applied log id on this node for `group`, if any.
+    pub fn local_applied(&self, group: GroupId) -> Option<(u64, u64)> {
+        let raft = self.raft(group)?;
+        let rx = raft.metrics();
+        let metrics = rx.borrow_watched();
+        metrics.last_applied.as_ref().map(|id| {
+            (id.index(), id.committed_leader_id().term)
+        })
+    }
+
+    /// Whether this node accepts [`Self::read_stale`].
+    pub fn stale_queries_enabled(&self) -> bool {
+        self.config.enable_stale_queries
     }
 
     fn raft(&self, group: GroupId) -> Option<Raft<S>> {

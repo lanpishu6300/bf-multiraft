@@ -10,7 +10,8 @@ Full runbook: [docs/jepsen.md](../../jepsen.md) · Chaos: [docs/chaos-checklist.
 |-----|-----------|
 | `propose` → Ok | **Linearizable write** (quorum commit + apply) |
 | `read_linearizable` | **Linearizable read** (ReadIndex) |
-| `with_fsm` | Local / may be stale — debug only |
+| `read_stale` | Local + applied watermark (`enable_stale_queries`); Standby offload — not linearizable |
+| `with_fsm` | Local / may be stale — debug / metrics |
 | Cross-group | No cross-symbol transactions |
 
 Timed-out / disconnected `propose` is **indeterminate** — retry with the same idempotency key.

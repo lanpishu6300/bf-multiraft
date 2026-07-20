@@ -2,8 +2,7 @@
 
 **English：** [2026-07-18-multiraft-grpc.md](./2026-07-18-multiraft-grpc.md)
 
-> **说明：** 英文版为 agent 执行的规范来源；本中文版供人工阅读。  
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or executing-plans. Steps use checkbox (`- [ ]`) syntax.
+> **说明：** 英文版为规范来源（canonical）；本中文版供阅读对照。
 
 **目标：** 将仅单进程可用的 Demo 网络替换为 tonic/gRPC，使 3 个 OS 进程组成 Multi-Raft 集群；验收时杀掉真实 Leader PID。
 

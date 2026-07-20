@@ -15,6 +15,7 @@ pub use config::NodeRole;
 pub use config::SnapshotMode;
 pub use error::MultiRaftError;
 pub use error::ProposeOk;
+pub use error::StaleRead;
 pub use snapshot::STANDBY_SNAPSHOT_TRIGGER;
 pub use snapshot::RecoverOutcome;
 pub use snapshot::SnapshotAdvertisement;

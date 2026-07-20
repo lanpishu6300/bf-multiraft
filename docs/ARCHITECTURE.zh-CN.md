@@ -68,7 +68,8 @@ RMQ (per-symbol)
 |-----|--------|
 | `propose` → Ok | Linearizable 写（已 commit + applied） |
 | `read_linearizable` | Linearizable 读（ReadIndex） |
-| `with_fsm` | 本地 / 可能 stale — 仅调试 |
+| `read_stale` | 本地 + applied 水位；需 `enable_stale_queries`（Standby 卸载） |
+| `with_fsm` | 本地 / 可能 stale — 调试 / 指标 |
 | Cross-group | 无跨 symbol 事务 |
 
 失败 / 超时的 `propose` 结果**不确定** — 须用同一幂等键重试。
@@ -94,11 +95,12 @@ RMQ (per-symbol)
 · [English](./specs/2026-07-20-standby-async-snapshot-design.md)。
 
 Premium 对等（从 ad HTTP 拉取、standby 复制限速、promote/demote、多 Standby 选最新 ad、
-经 `daisy_upstream_base` 的**快照 daisy-chain**、HTTP Range 分块续传）：
+经 `daisy_upstream_base` 的**快照 daisy-chain**、HTTP Range 分块续传、Standby `read_stale`）：
 [specs/2026-07-20-aeron-standby-parity-design.zh-CN.md](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md)
 · [English](./specs/2026-07-20-aeron-standby-parity-design.md)。
 
 P2 daisy 是**快照分发链**（不是 openraft log 重定向）。
+P3 `read_stale` 明确为非 linearizable。
 
 ## 上游锁定
 

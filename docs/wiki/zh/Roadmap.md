@@ -17,7 +17,7 @@
 - [x] Aeron Standby Premium 对等 **P0**：从 ad HTTP 拉取 + standby 复制限速 — [对等设计](../../specs/2026-07-20-aeron-standby-parity-design.zh-CN.md)
 - [x] Aeron Standby Premium 对等 **P1**：`promote_standby` / `demote_to_standby` 切换
 - [x] Aeron Standby Premium 对等 **P2**：daisy-chain（快照链）/ 多 standby / Range 流式拉取
-- [ ] Aeron Standby Premium 对等 **P3**：Standby 只读服务卸载
+- [x] Aeron Standby Premium 对等 **P3**：`read_stale` / Standby 只读服务卸载
 
 ## 二期（下游应用）
 
