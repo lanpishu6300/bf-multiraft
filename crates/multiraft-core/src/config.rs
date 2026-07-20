@@ -47,6 +47,12 @@ pub struct ClusterConfig {
     pub snapshot_keep: usize,
     /// Admin HTTP bind / advertise address for snapshot fetch URLs (demo / recovery).
     pub admin_advertise_addr: Option<SocketAddr>,
+    /// Max outstanding AppendEntries toward Standby node ids (soft).
+    pub standby_max_inflight: u32,
+    /// Artificial delay before sending RPC to standby peers (ms).
+    pub standby_replicate_delay_ms: u64,
+    /// Node ids treated as standby for throttling (seed; also updated at runtime).
+    pub standby_node_ids: Vec<NodeId>,
 }
 
 impl ClusterConfig {
@@ -74,6 +80,9 @@ impl ClusterConfig {
             snapshot_mode: SnapshotMode::Disabled,
             snapshot_keep: 2,
             admin_advertise_addr: None,
+            standby_max_inflight: 8,
+            standby_replicate_delay_ms: 0,
+            standby_node_ids: Vec::new(),
         }
     }
 }

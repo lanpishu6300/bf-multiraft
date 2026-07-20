@@ -3,14 +3,17 @@
 **中文：** [2026-07-20-standby-async-snapshot-design.zh-CN.md](./2026-07-20-standby-async-snapshot-design.zh-CN.md)
 
 **Date:** 2026-07-20  
-**Status:** Implemented in `multiraft`  
-**Related:** [ARCHITECTURE.md](../ARCHITECTURE.md) · openraft `=0.10.0-alpha.30`
+**Status:** MVP implemented in `multiraft`  
+**Related:** [ARCHITECTURE.md](../ARCHITECTURE.md) · openraft `=0.10.0-alpha.30`  
+**Premium gaps / roadmap:** [Aeron Standby parity](./2026-07-20-aeron-standby-parity-design.md)
 
 ---
 
 ## Goal
 
-Offload FSM snapshot serialization from Raft **voters** to a **Standby** (openraft Learner), so Leaders never block the hot path on a sync FSM dump. Pattern inspired by Aeron archive / dedicated snapshotters.
+Offload FSM snapshot serialization from Raft **voters** to a **Standby** (openraft Learner), so Leaders never block the hot path on a sync FSM dump. Pattern inspired by Aeron Cluster Standby snapshots.
+
+This document is the **MVP**. Full commercial parity (auto pull, throttle, transition, daisy-chain) lives in the [parity design](./2026-07-20-aeron-standby-parity-design.md).
 
 ## Architecture
 
