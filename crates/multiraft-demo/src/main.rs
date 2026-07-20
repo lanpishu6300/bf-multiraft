@@ -200,17 +200,15 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
 
     let configs: Vec<ClusterConfig> = peer_ids
         .iter()
-        .map(|&id| ClusterConfig {
-            node_id: id,
-            peers: peers.clone(),
-            data_dir: args.data_dir.join(format!("node-{id}")),
-            heartbeat_interval_ms: 100,
-            election_timeout_min_ms: 300,
-            election_timeout_max_ms: 600,
-            role: NodeRole::Voter,
-            snapshot_mode: SnapshotMode::Disabled,
-            snapshot_keep: 2,
-            admin_advertise_addr: Some(([127, 0, 0, 1], args.base_port).into()),
+        .map(|&id| {
+            let mut cfg = ClusterConfig::for_test(id, &peer_ids);
+            cfg.peers = peers.clone();
+            cfg.data_dir = args.data_dir.join(format!("node-{id}"));
+            cfg.role = NodeRole::Voter;
+            cfg.snapshot_mode = SnapshotMode::Disabled;
+            cfg.snapshot_keep = 2;
+            cfg.admin_advertise_addr = Some(([127, 0, 0, 1], args.base_port).into());
+            cfg
         })
         .collect();
 
@@ -308,18 +306,14 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     // Script passes `{root}/node-{id}`; use that path directly.
     std::fs::create_dir_all(&args.data_dir)?;
 
-    let config = ClusterConfig {
-        node_id,
-        peers,
-        data_dir: args.data_dir.clone(),
-        heartbeat_interval_ms: 100,
-        election_timeout_min_ms: 300,
-        election_timeout_max_ms: 600,
-        role,
-        snapshot_mode,
-        snapshot_keep: 2,
-        admin_advertise_addr: Some(admin_addr),
-    };
+    let peer_ids: Vec<u64> = peers.iter().map(|(id, _)| *id).collect();
+    let mut config = ClusterConfig::for_test(node_id, &peer_ids);
+    config.peers = peers;
+    config.data_dir = args.data_dir.clone();
+    config.role = role;
+    config.snapshot_mode = snapshot_mode;
+    config.snapshot_keep = 2;
+    config.admin_advertise_addr = Some(admin_addr);
 
     info!(
         node_id,
@@ -620,6 +614,18 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
         .route("/admin/snapshot_ads", post(admin_post_snapshot_ad))
         .route("/admin/snapshot_ads", get(admin_get_snapshot_ads))
         .route("/admin/add_standby/:group/:standby_id", post(admin_add_standby))
+        .route(
+            "/admin/replicate_standby_snapshot/:group",
+            post(admin_replicate_standby_snapshot),
+        )
+        .route(
+            "/admin/promote_standby/:group/:id",
+            post(admin_promote_standby),
+        )
+        .route(
+            "/admin/demote_standby/:group/:id",
+            post(admin_demote_standby),
+        )
         .route("/snapshots/:id/latest", get(snapshot_latest))
         .with_state(state);
 
@@ -767,9 +773,9 @@ async fn snapshot_latest(
         group: entry.group,
         last_index: entry.last_index,
         last_term: entry.last_term,
-        snapshot_id: entry.snapshot_id,
+        snapshot_id: entry.snapshot_id.clone(),
         size: entry.size,
-        sha256_hex: entry.sha256_hex,
+        sha256_hex: entry.sha256_hex.clone(),
     };
     let mut headers = axum::http::HeaderMap::new();
     if let Ok(v) = serde_json::to_string(&meta) {
@@ -777,11 +783,153 @@ async fn snapshot_latest(
             headers.insert("x-snapshot-meta", hv);
         }
     }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&entry.last_index.to_string()) {
+        headers.insert("x-snapshot-index", hv);
+    }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&entry.last_term.to_string()) {
+        headers.insert("x-snapshot-term", hv);
+    }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&entry.snapshot_id) {
+        headers.insert("x-snapshot-id", hv);
+    }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&entry.sha256_hex) {
+        headers.insert("x-snapshot-sha256", hv);
+    }
     headers.insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/octet-stream"),
     );
     Ok((headers, data))
+}
+
+#[derive(Deserialize, Default)]
+struct ReplicateStandbyReq {
+    fetch_url: Option<String>,
+}
+
+async fn admin_replicate_standby_snapshot(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+    body: Option<Json<ReplicateStandbyReq>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let Some(n) = state.nodes.first() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrResp {
+                ok: false,
+                error: "no local node".into(),
+            }),
+        ));
+    };
+    let fetch_url = body.and_then(|j| j.0.fetch_url);
+    let outcome = if let Some(url) = fetch_url {
+        match n.pull_and_install_snapshot(group, &url).await {
+            Ok(()) => serde_json::json!({
+                "ok": true,
+                "outcome": "Installed",
+                "fetch_url": url,
+            }),
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    } else {
+        match n.try_recover_from_standby_ads(group).await {
+            Ok(out) => serde_json::json!({ "ok": true, "outcome": format!("{out:?}") }),
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    };
+    Ok(Json(outcome))
+}
+
+async fn admin_promote_standby(
+    State(state): State<Arc<DemoState>>,
+    Path((group, id)): Path<(u64, u64)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    for n in &state.nodes {
+        if !n.is_leader(group) {
+            continue;
+        }
+        match n.promote_standby(group, id).await {
+            Ok(()) => {
+                return Ok(Json(serde_json::json!({
+                    "ok": true,
+                    "group": group,
+                    "node_id": id,
+                    "action": "promote",
+                })));
+            }
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local leader".into(),
+        }),
+    ))
+}
+
+async fn admin_demote_standby(
+    State(state): State<Arc<DemoState>>,
+    Path((group, id)): Path<(u64, u64)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    for n in &state.nodes {
+        if !n.is_leader(group) {
+            continue;
+        }
+        match n.demote_to_standby(group, id).await {
+            Ok(()) => {
+                return Ok(Json(serde_json::json!({
+                    "ok": true,
+                    "group": group,
+                    "node_id": id,
+                    "action": "demote",
+                })));
+            }
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local leader".into(),
+        }),
+    ))
 }
 
 /// Propose `CounterFsm::encode_add` on a local leader (or any local node with

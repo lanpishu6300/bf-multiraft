@@ -23,3 +23,12 @@ pub struct SnapshotAdvertisement {
     /// e.g. `http://127.0.0.1:23103/snapshots/0/latest`
     pub fetch_url: String,
 }
+
+/// Result of auto-recovery from standby snapshot advertisements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoverOutcome {
+    Installed { last_index: u64, last_term: u64 },
+    SkippedNoAd,
+    SkippedNotNewer { local_index: u64, ad_index: u64 },
+    FetchFailed(String),
+}

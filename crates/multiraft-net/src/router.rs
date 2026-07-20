@@ -17,6 +17,7 @@ use openraft::error::Unreachable;
 use crate::conn_metrics::ConnMetrics;
 use crate::decode;
 use crate::encode;
+use crate::standby_throttle::StandbyThrottle;
 use multiraft_core::GroupId;
 use multiraft_core::NodeId;
 use multiraft_core::TypeConfig;
@@ -50,6 +51,7 @@ pub struct Router {
     /// Map from node_id to node connection.
     pub nodes: Arc<Mutex<BTreeMap<NodeId, NodeTx>>>,
     metrics: ConnMetrics,
+    throttle: StandbyThrottle,
 }
 
 impl Router {
@@ -57,7 +59,13 @@ impl Router {
         Self {
             nodes: Arc::new(Mutex::new(BTreeMap::new())),
             metrics: ConnMetrics::new(),
+            throttle: StandbyThrottle::default(),
         }
+    }
+
+    /// Standby replication throttle shared by all groups on this fabric.
+    pub fn throttle(&self) -> &StandbyThrottle {
+        &self.throttle
     }
 
     /// Register a node connection. All groups on this node share it.
@@ -95,6 +103,8 @@ impl Router {
         Req: serde::Serialize,
         Result<Resp, RaftError>: serde::de::DeserializeOwned,
     {
+        let _standby_permit = self.throttle.before_send(to_node).await;
+
         let (resp_tx, resp_rx) = oneshot::channel();
 
         let encoded_req = encode(&req);

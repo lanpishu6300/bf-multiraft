@@ -21,6 +21,7 @@
 |-----------|------|------|
 | [2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) | [2026-07-18-multiraft-design.zh-CN.md](./specs/2026-07-18-multiraft-design.zh-CN.md) | 撮合高可用薄 Multi-Raft |
 | [2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md) | [2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md) | Standby 异步快照（对齐 Aeron） |
+| [2026-07-20-aeron-standby-parity-design.md](./specs/2026-07-20-aeron-standby-parity-design.md) | [2026-07-20-aeron-standby-parity-design.zh-CN.md](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md) | Aeron Standby Premium 对等（P0–P3） |
 
 ## 计划（plans）
 

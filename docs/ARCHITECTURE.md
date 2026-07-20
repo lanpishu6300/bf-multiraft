@@ -94,6 +94,10 @@ under `{data_dir}/snapshots/`. Voters pull advertisements on recovery.
 Details: [specs/2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md)
 · [中文](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md).
 
+Premium parity (HTTP pull from ads, standby replication throttle, promote/demote):
+[specs/2026-07-20-aeron-standby-parity-design.md](./specs/2026-07-20-aeron-standby-parity-design.md)
+· [中文](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md).
+
 ## Upstream pin
 
 | Crate | Version |

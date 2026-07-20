@@ -27,18 +27,9 @@ async fn grpc_three_node_propose() {
 
     let mut nodes = Vec::with_capacity(3);
     for &id in &peer_ids {
-        let config = ClusterConfig {
-            node_id: id,
-            peers: peers.clone(),
-            data_dir: Default::default(),
-            heartbeat_interval_ms: 100,
-            election_timeout_min_ms: 300,
-            election_timeout_max_ms: 600,
-            role: Default::default(),
-            snapshot_mode: Default::default(),
-            snapshot_keep: 2,
-            admin_advertise_addr: None,
-        };
+        let mut config = ClusterConfig::for_test(id, &peer_ids);
+        config.peers = peers.clone();
+        config.data_dir = Default::default();
         nodes.push(
             MultiRaft::start_grpc(config)
                 .await
