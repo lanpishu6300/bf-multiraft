@@ -14,6 +14,7 @@ mod multiraft;
 mod network;
 mod node;
 mod router;
+mod standby_throttle;
 
 pub use conn_metrics::ConnMetrics;
 pub use grpc::GrpcRouter;
@@ -31,6 +32,7 @@ pub use router::NodeRx;
 pub use router::NodeTx;
 pub use router::Router;
 pub use router::RouterError;
+pub use standby_throttle::StandbyThrottle;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

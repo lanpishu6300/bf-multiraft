@@ -17,6 +17,7 @@
 //!   uses [`GrpcRouter`] for outbound Raft RPCs.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -27,12 +28,15 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use openraft::BasicNode;
+use openraft::ChangeMembers;
 use openraft::Config;
 use openraft::ReadPolicy;
 use openraft::async_runtime::WatchReceiver;
 use openraft::error::InitializeError;
 use openraft::error::RaftError;
 use openraft::type_config::TypeConfigExt;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::grpc::GrpcRouter;
 use crate::grpc::GrpcServer;
@@ -42,12 +46,14 @@ use crate::node::GroupApp;
 use crate::node::GroupMap;
 use crate::node::Node;
 use crate::router::Router;
+use crate::standby_throttle::StandbyThrottle;
 use multiraft_core::ClusterConfig;
 use multiraft_core::GroupId;
 use multiraft_core::MultiRaftError;
 use multiraft_core::NodeId;
 use multiraft_core::NodeRole;
 use multiraft_core::ProposeOk;
+use multiraft_core::RecoverOutcome;
 use multiraft_core::Request;
 use multiraft_core::STANDBY_SNAPSHOT_TRIGGER;
 use multiraft_core::SnapshotAdvertisement;
@@ -203,6 +209,8 @@ pub struct MultiRaft<S: StateMachine = CounterFsm> {
     make_fsm: Arc<dyn Fn(GroupId) -> S + Send + Sync>,
     leader_cbs: Arc<Mutex<Vec<LeaderCb>>>,
     snapshot_rt: Arc<SnapshotRuntime>,
+    /// Standby node ids for replication throttle (shared with Router / GrpcRouter).
+    standby_throttle: StandbyThrottle,
 }
 
 impl MultiRaft<CounterFsm> {
@@ -250,6 +258,8 @@ impl<S: StateMachine> MultiRaft<S> {
         let (node, _tx) = Node::with_groups(config.node_id, router.clone(), groups.clone());
         TypeConfig::spawn(node.run());
         let snapshot_rt = SnapshotRuntime::new(&config);
+        router.throttle().apply_config(&config);
+        let standby_throttle = router.throttle().clone();
 
         Ok(Self {
             node_id: config.node_id,
@@ -259,6 +269,7 @@ impl<S: StateMachine> MultiRaft<S> {
             make_fsm: Arc::new(make_fsm),
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
             snapshot_rt,
+            standby_throttle,
         })
     }
 
@@ -279,7 +290,8 @@ impl<S: StateMachine> MultiRaft<S> {
             })?;
 
         let groups: GroupMap<S> = Arc::new(Mutex::new(BTreeMap::new()));
-        let grpc_router = GrpcRouter::new(config.peers.clone(), config.node_id);
+        let grpc_router = GrpcRouter::from_config(&config);
+        let standby_throttle = grpc_router.throttle().clone();
         let snapshot_rt = SnapshotRuntime::new(&config);
 
         let groups_for_server = groups.clone();
@@ -303,6 +315,7 @@ impl<S: StateMachine> MultiRaft<S> {
             make_fsm: Arc::new(make_fsm),
             leader_cbs: Arc::new(Mutex::new(Vec::new())),
             snapshot_rt,
+            standby_throttle,
         })
     }
 
@@ -372,7 +385,10 @@ impl<S: StateMachine> MultiRaft<S> {
             .unwrap_or_default();
         let node = BasicNode { addr };
         match raft.add_learner(standby_id, node, true).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.standby_throttle.insert(standby_id);
+                Ok(())
+            }
             Err(e) => {
                 if let Some(fwd) = e.forward_to_leader() {
                     return Err(MultiRaftError::NotLeader {
@@ -382,6 +398,197 @@ impl<S: StateMachine> MultiRaft<S> {
                 Err(MultiRaftError::Other(anyhow::anyhow!("add_learner: {e}")))
             }
         }
+    }
+
+    /// Standby ids currently subject to replication throttle.
+    pub fn standby_throttle_ids(&self) -> HashSet<NodeId> {
+        self.standby_throttle.standby_ids()
+    }
+
+    /// HTTP GET `fetch_url`, verify sha256, install into the local FSM.
+    pub async fn pull_and_install_snapshot(
+        &self,
+        group: u64,
+        fetch_url: &str,
+    ) -> Result<(), MultiRaftError> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("reqwest client: {e}")))?;
+        let resp = client
+            .get(fetch_url)
+            .send()
+            .await
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("fetch {fetch_url}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(MultiRaftError::Other(anyhow::anyhow!(
+                "fetch {fetch_url}: HTTP {}",
+                resp.status()
+            )));
+        }
+        let headers = resp.headers().clone();
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("fetch body: {e}")))?
+            .to_vec();
+
+        let last_index = header_u64(&headers, "x-snapshot-index").ok_or_else(|| {
+            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Index header"))
+        })?;
+        let last_term = header_u64(&headers, "x-snapshot-term").ok_or_else(|| {
+            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Term header"))
+        })?;
+        let expected_sha = header_str(&headers, "x-snapshot-sha256").ok_or_else(|| {
+            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Sha256 header"))
+        })?;
+        let actual_sha = hex_sha256(&body);
+        if actual_sha != expected_sha {
+            return Err(MultiRaftError::Other(anyhow::anyhow!(
+                "snapshot sha256 mismatch: expected {expected_sha}, got {actual_sha}"
+            )));
+        }
+        let _snapshot_id = header_str(&headers, "x-snapshot-id");
+        self.install_durable_snapshot(group, last_index, last_term, body)
+            .await
+    }
+
+    /// Pick the newest local snapshot ad for `group` and pull if newer than local applied.
+    pub async fn try_recover_from_standby_ads(
+        &self,
+        group: u64,
+    ) -> Result<RecoverOutcome, MultiRaftError> {
+        let ad = self
+            .snapshot_ads()
+            .into_iter()
+            .filter(|a| a.group == group && !a.fetch_url.is_empty())
+            .max_by_key(|a| (a.last_term, a.last_index));
+        let Some(ad) = ad else {
+            return Ok(RecoverOutcome::SkippedNoAd);
+        };
+
+        let local_index = self.local_applied_index(group).unwrap_or(0);
+        if ad.last_index <= local_index {
+            return Ok(RecoverOutcome::SkippedNotNewer {
+                local_index,
+                ad_index: ad.last_index,
+            });
+        }
+
+        match self.pull_and_install_snapshot(group, &ad.fetch_url).await {
+            Ok(()) => Ok(RecoverOutcome::Installed {
+                last_index: ad.last_index,
+                last_term: ad.last_term,
+            }),
+            Err(MultiRaftError::UnknownGroup(g)) => Err(MultiRaftError::UnknownGroup(g)),
+            Err(e) => Ok(RecoverOutcome::FetchFailed(e.to_string())),
+        }
+    }
+
+    /// Leader-only: promote a Standby learner to voter (`change_membership` AddVoterIds).
+    pub async fn promote_standby(&self, group: u64, node_id: u64) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let membership = raft
+            .metrics()
+            .borrow_watched()
+            .membership_config
+            .membership()
+            .clone();
+        let is_learner = membership.learner_ids().any(|id| id == node_id);
+        let is_voter = membership.voter_ids().any(|id| id == node_id);
+        if is_voter {
+            self.standby_throttle.remove(node_id);
+            return Ok(());
+        }
+        if !is_learner {
+            return Err(MultiRaftError::Other(anyhow::anyhow!(
+                "promote_standby: node {node_id} is not a learner in group {group}"
+            )));
+        }
+        let mut add = BTreeSet::new();
+        add.insert(node_id);
+        match raft
+            .change_membership(ChangeMembers::AddVoterIds(add), true)
+            .await
+        {
+            Ok(_) => {
+                self.standby_throttle.remove(node_id);
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(fwd) = e.forward_to_leader() {
+                    return Err(MultiRaftError::NotLeader {
+                        hint: fwd.leader_id,
+                    });
+                }
+                Err(MultiRaftError::Other(anyhow::anyhow!(
+                    "promote_standby change_membership: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Leader-only: demote a voter to Standby learner (`RemoveVoters`, retain=true).
+    pub async fn demote_to_standby(&self, group: u64, node_id: u64) -> Result<(), MultiRaftError> {
+        let raft = self
+            .raft(group)
+            .ok_or(MultiRaftError::UnknownGroup(group))?;
+        let membership = raft
+            .metrics()
+            .borrow_watched()
+            .membership_config
+            .membership()
+            .clone();
+        let is_voter = membership.voter_ids().any(|id| id == node_id);
+        if !is_voter {
+            self.standby_throttle.insert(node_id);
+            return Ok(());
+        }
+        let mut remove = BTreeSet::new();
+        remove.insert(node_id);
+        match raft
+            .change_membership(ChangeMembers::RemoveVoters(remove), true)
+            .await
+        {
+            Ok(_) => {
+                self.standby_throttle.insert(node_id);
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(fwd) = e.forward_to_leader() {
+                    return Err(MultiRaftError::NotLeader {
+                        hint: fwd.leader_id,
+                    });
+                }
+                Err(MultiRaftError::Other(anyhow::anyhow!(
+                    "demote_to_standby change_membership: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Current voter ids from raft metrics (committed membership view may lag slightly).
+    pub fn voter_ids(&self, group: u64) -> Option<BTreeSet<NodeId>> {
+        let raft = self.raft(group)?;
+        Some(
+            raft.metrics()
+                .borrow_watched()
+                .membership_config
+                .membership()
+                .voter_ids()
+                .collect(),
+        )
+    }
+
+    fn local_applied_index(&self, group: GroupId) -> Option<u64> {
+        let raft = self.raft(group)?;
+        raft.metrics()
+            .borrow_watched()
+            .last_applied
+            .as_ref()
+            .map(|id| id.index())
     }
 
     /// Leader proposes the magic standby-snapshot trigger log entry.
@@ -885,4 +1092,20 @@ pub async fn wait_for_leader(
         TypeConfig::sleep(Duration::from_millis(50)).await;
     }
     None
+}
+
+fn hex_sha256(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+fn header_u64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
+    header_str(headers, name)?.parse().ok()
 }

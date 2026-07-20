@@ -14,6 +14,10 @@
 ## Phase-1.5 / library hardening
 
 - [x] Standby async snapshot (Aeron-aligned Learner offload) — see [spec](../../specs/2026-07-20-standby-async-snapshot-design.md)
+- [x] Aeron Standby premium parity **P0**: HTTP pull from ads + standby replication throttle — [parity spec](../../specs/2026-07-20-aeron-standby-parity-design.md)
+- [x] Aeron Standby premium parity **P1**: `promote_standby` / `demote_to_standby` transition
+- [ ] Aeron Standby premium parity **P2**: daisy-chain / multi-standby / streaming fetch
+- [ ] Aeron Standby premium parity **P3**: read-only service offload on Standby
 
 ## Phase-2 (downstream app)
 

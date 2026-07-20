@@ -93,6 +93,10 @@ RMQ (per-symbol)
 详情：[specs/2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md)
 · [English](./specs/2026-07-20-standby-async-snapshot-design.md)。
 
+Premium 对等（从 ad HTTP 拉取、standby 复制限速、promote/demote）：
+[specs/2026-07-20-aeron-standby-parity-design.zh-CN.md](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md)
+· [English](./specs/2026-07-20-aeron-standby-parity-design.md)。
+
 ## 上游锁定
 
 | Crate | Version |

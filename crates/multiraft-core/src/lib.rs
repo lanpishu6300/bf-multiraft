@@ -16,6 +16,7 @@ pub use config::SnapshotMode;
 pub use error::MultiRaftError;
 pub use error::ProposeOk;
 pub use snapshot::STANDBY_SNAPSHOT_TRIGGER;
+pub use snapshot::RecoverOutcome;
 pub use snapshot::SnapshotAdvertisement;
 pub use snapshot::is_standby_snapshot_trigger;
 pub use type_config::GroupId;

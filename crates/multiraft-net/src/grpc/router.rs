@@ -31,6 +31,8 @@ use crate::decode;
 use crate::encode;
 use crate::grpc::proto::RaftRequest;
 use crate::grpc::proto::raft_service_client::RaftServiceClient;
+use crate::standby_throttle::StandbyThrottle;
+use multiraft_core::ClusterConfig;
 use multiraft_core::GroupId;
 use multiraft_core::NodeId;
 use multiraft_core::TypeConfig;
@@ -55,22 +57,44 @@ pub struct GrpcRouter {
     peers: Arc<HashMap<NodeId, SocketAddr>>,
     channels: Arc<Mutex<HashMap<NodeId, Channel>>>,
     metrics: ConnMetrics,
+    throttle: StandbyThrottle,
 }
 
 impl GrpcRouter {
     /// Build a router for `self_id` using `peers` (including self; self is skipped outbound).
     pub fn new(peers: Vec<(NodeId, SocketAddr)>, self_id: NodeId) -> Self {
+        Self::with_throttle(peers, self_id, StandbyThrottle::default())
+    }
+
+    /// Build with a preconfigured standby throttle (from [`ClusterConfig`]).
+    pub fn with_throttle(
+        peers: Vec<(NodeId, SocketAddr)>,
+        self_id: NodeId,
+        throttle: StandbyThrottle,
+    ) -> Self {
         let peers: HashMap<NodeId, SocketAddr> = peers.into_iter().collect();
         Self {
             self_id,
             peers: Arc::new(peers),
             channels: Arc::new(Mutex::new(HashMap::new())),
             metrics: ConnMetrics::new(),
+            throttle,
         }
+    }
+
+    /// Build from cluster config (seeds standby throttle).
+    pub fn from_config(config: &ClusterConfig) -> Self {
+        let throttle = StandbyThrottle::from_config(config);
+        Self::with_throttle(config.peers.clone(), config.node_id, throttle)
     }
 
     pub fn self_id(&self) -> NodeId {
         self.self_id
+    }
+
+    /// Standby replication throttle for outbound RPCs.
+    pub fn throttle(&self) -> &StandbyThrottle {
+        &self.throttle
     }
 
     /// Distinct peer channels created (O(nodes), not O(groups)).
@@ -120,6 +144,8 @@ impl GrpcRouter {
         Req: serde::Serialize,
         Result<Resp, RaftError>: serde::de::DeserializeOwned,
     {
+        let _standby_permit = self.throttle.before_send(to_node).await;
+
         let channel = self.channel_for(to_node).await?;
         let mut client = RaftServiceClient::new(channel);
 
