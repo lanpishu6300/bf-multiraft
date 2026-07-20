@@ -54,13 +54,25 @@ cargo test --workspace
 
 端口与 Admin API 见 [快速开始](docs/wiki/zh/Getting-Started.md)。
 
+### Standby 运维（可选）
+
+```bash
+STANDBY=1 ./scripts/run_demo_cluster.sh
+curl -s http://127.0.0.1:21100/admin/groups/0/status
+curl -s -X POST http://127.0.0.1:21100/admin/standby_snapshot/0
+curl -s http://127.0.0.1:21103/admin/catalog/0
+curl -s -X POST http://127.0.0.1:21100/admin/replicate_standby_snapshot/0
+curl -s http://127.0.0.1:21103/groups/0/stale
+```
+
 ### 一致性（每 Group）
 
 | API | 模型 |
 |-----|------|
 | `propose` Ok | Linearizable 写 |
 | `read_linearizable` | Linearizable 读 |
-| `with_fsm` | 本地 / 可能 stale（仅调试） |
+| `read_stale` | 本地 + applied 水位（`enable_stale_queries`） |
+| `with_fsm` | 本地 / 可能 stale（调试 / 指标） |
 
 详见 [docs/jepsen.zh-CN.md](docs/jepsen.zh-CN.md) · [English](docs/jepsen.md)。
 
@@ -70,8 +82,8 @@ cargo test --workspace
 
 ```bash
 ./scripts/acceptance.sh
-./scripts/chaos.sh
-./scripts/run_jepsen.sh
+SCENARIO=standby ./scripts/chaos.sh
+STANDBY=1 ./scripts/run_jepsen.sh
 ./scripts/test_all.sh
 ```
 

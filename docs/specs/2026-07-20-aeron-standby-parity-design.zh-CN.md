@@ -36,7 +36,7 @@
 | A9 | Warm DR / TransitionModule | — | **`promote_standby` Learner→Voter**（+ demote） | **P1** |
 | A10 | 多 Standby / 选择性服务 | 单 Standby | 多 learner + `best_snapshot_ad` 选最新 | **P2** |
 | A11 | Archive 语义 | 目录 catalog | **HTTP Range** 分块拉取 + 断点续传 + sha256 | **P2** |
-| A12 | Backup query / 鉴权 / Tool | — | 更丰富 admin；鉴权后期 | P2 |
+| A12 | Backup query / 鉴权 / Tool | — | Admin status/catalog/best_ad/daisy_sync + 结构化 recover；**鉴权不做** | **P2/ops** |
 | A13 | Standby 上跑慢查询服务 | — | `read_stale` + `enable_stale_queries` | **P3** |
 
 ---
