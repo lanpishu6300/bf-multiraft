@@ -37,7 +37,7 @@ pub async fn pull_snapshot_chunked(
     let (headers, total_hint) = match probe {
         Ok(resp) if resp.status().is_success() || resp.status().as_u16() == 206 => {
             let headers = resp.headers().clone();
-            let total = content_length(&headers).or_else(|| content_range_total(&headers));
+            let total = content_range_total(&headers).or_else(|| content_length(&headers));
             (headers, total)
         }
         _ => {
@@ -51,9 +51,8 @@ pub async fn pull_snapshot_chunked(
                 anyhow::bail!("fetch {fetch_url}: HTTP {}", resp.status());
             }
             let headers = resp.headers().clone();
-            let total = content_length(&headers)
-                .or_else(|| content_range_total(&headers))
-                .or(Some(1));
+            // Prefer Content-Range total: a bytes=0-0 probe often has Content-Length: 1.
+            let total = content_range_total(&headers).or_else(|| content_length(&headers));
             let _ = resp.bytes().await;
             (headers, total)
         }
@@ -67,10 +66,13 @@ pub async fn pull_snapshot_chunked(
         .ok_or_else(|| anyhow::anyhow!("missing X-Snapshot-Sha256 header"))?;
     let snapshot_id = header_str(&headers, "x-snapshot-id");
 
-    let total = match total_hint.or_else(|| content_length(&headers)) {
-        Some(t) => t,
-        None => {
-            // Server may omit length on HEAD; fall back to full GET.
+    let total = match total_hint
+        .or_else(|| content_range_total(&headers))
+        .or_else(|| content_length(&headers))
+    {
+        Some(t) if t > 0 => t,
+        _ => {
+            // Server may omit length on HEAD / probe; fall back to full GET.
             return pull_snapshot_full(&client, fetch_url, last_index, last_term, snapshot_id, &expected_sha)
                 .await;
         }
@@ -223,5 +225,19 @@ mod tests {
         let a = temp_path_for_url(&dir, "http://x/s", "abc");
         let b = temp_path_for_url(&dir, "http://x/s", "abc");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn content_range_total_parses() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_RANGE,
+            "bytes 0-0/65536".parse().unwrap(),
+        );
+        headers.insert(reqwest::header::CONTENT_LENGTH, "1".parse().unwrap());
+        assert_eq!(content_range_total(&headers), Some(65536));
+        // Prefer range total over probe Content-Length: 1.
+        let preferred = content_range_total(&headers).or_else(|| content_length(&headers));
+        assert_eq!(preferred, Some(65536));
     }
 }

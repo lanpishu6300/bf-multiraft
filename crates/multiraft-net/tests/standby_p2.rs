@@ -559,6 +559,18 @@ async fn daisy_chain_snapshot_from_upstream() {
         .await
         .expect("fsm");
     assert!(restored >= expected, "restored={restored}");
+
+    // Second daisy sync of the same upstream must not regress / reinstall.
+    let skip = sb
+        .sync_from_daisy_upstream(group)
+        .await
+        .expect("daisy sync again");
+    match skip {
+        RecoverOutcome::SkippedNotNewer { ad_index, .. } => {
+            assert_eq!(ad_index, entry_a.last_index);
+        }
+        other => panic!("expected SkippedNotNewer on second daisy sync, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

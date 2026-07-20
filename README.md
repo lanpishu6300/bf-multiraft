@@ -104,6 +104,8 @@ CLI: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`,
 
 ### Standby ops (optional)
 
+> **Lab only:** admin HTTP is unauthenticated and binds to `127.0.0.1`. Do not expose `/admin/*` or `/snapshots/*` beyond the local machine without an auth front-end.
+
 ```bash
 STANDBY=1 ./scripts/run_demo_cluster.sh
 # status / catalog / ads (admin on any voter; Standby is node 4 → :21103)
@@ -116,6 +118,8 @@ curl -s http://127.0.0.1:21103/groups/0/stale
 # warm promote (leader):
 curl -s -X POST http://127.0.0.1:21100/admin/promote_standby/0/4
 ```
+
+Voter restart auto-calls `try_recover_from_standby_ads` for each group when local snapshot ads are present and newer than the SM applied watermark.
 
 ### Consistency (per group)
 

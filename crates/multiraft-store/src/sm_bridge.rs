@@ -148,7 +148,23 @@ impl<S: StateMachine> StateMachineStore<S> {
         f(&inner.fsm)
     }
 
+    /// Last applied `(index, term)` from the SM store (source of truth for FSM watermark).
+    ///
+    /// Prefer this over Raft metrics after out-of-band [`Self::install_durable_snapshot`].
+    pub async fn last_applied(&self) -> Option<(u64, u64)> {
+        let inner = self.inner.lock().await;
+        inner.last_applied_log.as_ref().map(|id| {
+            (
+                id.index(),
+                id.committed_leader_id().term,
+            )
+        })
+    }
+
     /// Restore FSM + last_applied from durable snapshot bytes (recovery / pull).
+    ///
+    /// Preserves existing `last_membership` so an out-of-band install does not wipe
+    /// openraft membership metadata exposed via `get_current_snapshot`.
     pub async fn install_durable_snapshot(
         &self,
         last_index: u64,
@@ -159,20 +175,22 @@ impl<S: StateMachine> StateMachineStore<S> {
         let leader_id = LeaderIdOf::<TypeConfig>::new_committed(last_term, 0);
         let log_id = LogIdOf::<TypeConfig>::new(leader_id, last_index);
         let snapshot_id = format!("{last_index}-{last_term}");
-        let meta = SnapshotMetaOf::<TypeConfig> {
-            last_log_id: Some(log_id),
-            last_membership: StoredMembershipOf::<TypeConfig>::default(),
-            snapshot_id: snapshot_id.clone(),
-        };
 
         let mut inner = self.inner.lock().await;
         let group_id = inner.group_id;
+        // Keep prior membership; durable snapshot payloads are FSM-only.
+        let last_membership = inner.last_membership.clone();
+        let meta = SnapshotMetaOf::<TypeConfig> {
+            last_log_id: Some(log_id),
+            last_membership,
+            snapshot_id: snapshot_id.clone(),
+        };
         inner
             .fsm
             .restore(group_id, &data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         inner.last_applied_log = meta.last_log_id.clone();
-        inner.last_membership = meta.last_membership.clone();
+        // membership already preserved in meta / unchanged on inner
         inner.current_snapshot = Some(StoredSnapshot {
             meta: meta.clone(),
             data: data.clone(),

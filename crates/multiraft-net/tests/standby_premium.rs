@@ -261,6 +261,18 @@ async fn auto_recover_via_http_from_standby_ads() {
         restored >= expected,
         "restored={restored} expected>={expected}"
     );
+    // SM watermark must track durable install (not only Raft metrics).
+    let (idx, _) = restarted.local_applied(group).await.expect("applied");
+    assert!(idx >= ad_index, "sm applied={idx} ad={ad_index}");
+
+    let again = restarted
+        .try_recover_from_standby_ads(group)
+        .await
+        .expect("recover again");
+    assert!(
+        matches!(again, RecoverOutcome::SkippedNotNewer { .. }),
+        "second recover should skip, got {again:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
