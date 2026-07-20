@@ -56,6 +56,8 @@ cargo test --workspace
 
 ### Standby 运维（可选）
 
+> **仅限实验室：** Admin HTTP **无鉴权**，绑定 `127.0.0.1`。勿在无鉴权网关前将 `/admin/*`、`/snapshots/*` 暴露到不可信网络。
+
 ```bash
 STANDBY=1 ./scripts/run_demo_cluster.sh
 curl -s http://127.0.0.1:21100/admin/groups/0/status
@@ -64,6 +66,8 @@ curl -s http://127.0.0.1:21103/admin/catalog/0
 curl -s -X POST http://127.0.0.1:21100/admin/replicate_standby_snapshot/0
 curl -s http://127.0.0.1:21103/groups/0/stale
 ```
+
+Voter 重启时若本地已有更新的 snapshot ad，会自动调用 `try_recover_from_standby_ads`。
 
 ### 一致性（每 Group）
 

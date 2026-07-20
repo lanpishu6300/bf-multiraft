@@ -27,4 +27,5 @@ We aim to acknowledge within **72 hours** and provide a remediation plan or fix 
 ## Scope notes
 
 - Demo admin HTTP and Raft gRPC are intended for lab / local clusters — treat exposure to untrusted networks as in scope if enabled by default in scripts.
+- **Admin HTTP has no authentication.** Routes under `/admin/*` (membership promote/demote, snapshot ads, `replicate_standby_snapshot` with arbitrary `fetch_url`) and `/snapshots/*/latest` must stay on loopback or behind an authenticated gateway. Do not port-forward them to untrusted networks. Snapshot SHA-256 verifies integrity, not trust of the fetch source.
 - Dependency CVEs: prefer PRs bumping versions with a short risk note (respect the openraft exact pin unless the bump is intentional).

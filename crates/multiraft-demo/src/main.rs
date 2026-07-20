@@ -395,6 +395,17 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
 
     if role == NodeRole::Voter {
         wait_local_sees_leaders(&node, &group_ids, Duration::from_secs(30)).await?;
+        // P0: on restart, auto-pull from persisted snapshot ads when newer than local.
+        for &gid in &group_ids {
+            match node.try_recover_from_standby_ads(gid).await {
+                Ok(outcome) => {
+                    info!(node_id, group = gid, ?outcome, "try_recover_from_standby_ads");
+                }
+                Err(e) => {
+                    warn!(node_id, group = gid, error = %e, "try_recover_from_standby_ads failed");
+                }
+            }
+        }
     } else {
         info!(node_id, "standby: waiting for add_learner from leader");
     }
@@ -977,7 +988,7 @@ async fn admin_group_status(
             }),
         ));
     }
-    let (applied_index, applied_term) = n.local_applied(group).unwrap_or((0, 0));
+    let (applied_index, applied_term) = n.local_applied(group).await.unwrap_or((0, 0));
     let voters: Vec<u64> = n
         .voter_ids(group)
         .map(|s| s.into_iter().collect())

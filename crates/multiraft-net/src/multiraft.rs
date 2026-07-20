@@ -394,6 +394,13 @@ impl<S: StateMachine> MultiRaft<S> {
                         hint: fwd.leader_id,
                     });
                 }
+                let msg = e.to_string();
+                // Transient: another membership change may still be committing.
+                if msg.contains("configuration change") {
+                    return Err(MultiRaftError::Other(anyhow::anyhow!(
+                        "add_learner: {e} (retry after membership settles)"
+                    )));
+                }
                 Err(MultiRaftError::Other(anyhow::anyhow!("add_learner: {e}")))
             }
         }
@@ -454,8 +461,8 @@ impl<S: StateMachine> MultiRaft<S> {
             return Ok(RecoverOutcome::SkippedNoAd);
         };
 
-        let local_index = self.local_applied_index(group).unwrap_or(0);
-        if ad.last_index <= local_index {
+        let (local_index, local_term) = self.local_applied(group).await.unwrap_or((0, 0));
+        if !log_pos_newer(ad.last_term, ad.last_index, local_term, local_index) {
             return Ok(RecoverOutcome::SkippedNotNewer {
                 local_index,
                 ad_index: ad.last_index,
@@ -476,6 +483,9 @@ impl<S: StateMachine> MultiRaft<S> {
 
     /// Pull latest snapshot from [`ClusterConfig::daisy_upstream_base`] into local
     /// catalog + FSM, then refresh a local [`SnapshotAdvertisement`].
+    ///
+    /// Skips install (and returns [`RecoverOutcome::SkippedNotNewer`]) when the
+    /// upstream snapshot is not strictly newer than the local SM applied watermark.
     pub async fn sync_from_daisy_upstream(
         &self,
         group: u64,
@@ -498,6 +508,19 @@ impl<S: StateMachine> MultiRaft<S> {
                 })
             }
         };
+
+        let (local_index, local_term) = self.local_applied(group).await.unwrap_or((0, 0));
+        if !log_pos_newer(
+            fetched.last_term,
+            fetched.last_index,
+            local_term,
+            local_index,
+        ) {
+            return Ok(RecoverOutcome::SkippedNotNewer {
+                local_index,
+                ad_index: fetched.last_index,
+            });
+        }
 
         let snapshot_id = fetched
             .snapshot_id
@@ -715,15 +738,6 @@ impl<S: StateMachine> MultiRaft<S> {
                 .learner_ids()
                 .collect(),
         )
-    }
-
-    fn local_applied_index(&self, group: GroupId) -> Option<u64> {
-        let raft = self.raft(group)?;
-        raft.metrics()
-            .borrow_watched()
-            .last_applied
-            .as_ref()
-            .map(|id| id.index())
     }
 
     /// Leader proposes the magic standby-snapshot trigger log entry.
@@ -1016,7 +1030,7 @@ impl<S: StateMachine> MultiRaft<S> {
             .get(&group)
             .map(|g| g.state_machine.clone())
             .ok_or(MultiRaftError::UnknownGroup(group))?;
-        let (applied_index, applied_term) = self.local_applied(group).unwrap_or((0, 0));
+        let (applied_index, applied_term) = self.local_applied(group).await.unwrap_or((0, 0));
         let value = sm.with_fsm(f).await;
         Ok(StaleRead {
             value,
@@ -1025,14 +1039,18 @@ impl<S: StateMachine> MultiRaft<S> {
         })
     }
 
-    /// Last applied log id on this node for `group`, if any.
-    pub fn local_applied(&self, group: GroupId) -> Option<(u64, u64)> {
-        let raft = self.raft(group)?;
-        let rx = raft.metrics();
-        let metrics = rx.borrow_watched();
-        metrics.last_applied.as_ref().map(|id| {
-            (id.index(), id.committed_leader_id().term)
-        })
+    /// Last applied log id for `group` from the state-machine store.
+    ///
+    /// Prefer this over Raft metrics so out-of-band
+    /// [`Self::install_durable_snapshot`] watermarks stay consistent with FSM data.
+    pub async fn local_applied(&self, group: GroupId) -> Option<(u64, u64)> {
+        let sm = self
+            .groups
+            .lock()
+            .unwrap()
+            .get(&group)
+            .map(|g| g.state_machine.clone())?;
+        sm.last_applied().await
     }
 
     /// Whether this node accepts [`Self::read_stale`].
@@ -1215,7 +1233,8 @@ impl<S: StateMachine> MultiRaft<S> {
             );
         }
 
-        Self::spawn_leader_watch(group, raft, self.leader_cbs.clone());
+        Self::spawn_leader_watch(group, raft.clone(), self.leader_cbs.clone());
+        Self::spawn_standby_throttle_watch(raft, self.standby_throttle.clone());
         Ok(())
     }
 
@@ -1246,6 +1265,34 @@ impl<S: StateMachine> MultiRaft<S> {
                     for cb in callbacks {
                         cb(group, cur);
                     }
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Keep standby throttle in sync with committed learner membership so every
+    /// potential leader throttles dynamically added Standbys after failover.
+    fn spawn_standby_throttle_watch(raft: Raft<S>, throttle: StandbyThrottle) {
+        TypeConfig::spawn(async move {
+            let mut rx = raft.metrics();
+            let mut last_learners: Option<BTreeSet<NodeId>> = None;
+            loop {
+                let membership = rx.borrow_watched().membership_config.membership().clone();
+                let learners: BTreeSet<NodeId> = membership.learner_ids().collect();
+                if last_learners.as_ref() != Some(&learners) {
+                    let voters: BTreeSet<NodeId> = membership.voter_ids().collect();
+                    for &id in &learners {
+                        throttle.insert(id);
+                    }
+                    for id in throttle.standby_ids() {
+                        if voters.contains(&id) {
+                            throttle.remove(id);
+                        }
+                    }
+                    last_learners = Some(learners);
                 }
                 if rx.changed().await.is_err() {
                     break;
@@ -1288,11 +1335,33 @@ async fn daisy_sync_once<S: StateMachine>(
     let fetched = match pull_snapshot_chunked(&url, chunk, temp_dir).await {
         Ok(f) => f,
         Err(e) => {
-                return Ok(RecoverOutcome::FetchFailed {
-                    error: e.to_string(),
-                })
-            }
+            return Ok(RecoverOutcome::FetchFailed {
+                error: e.to_string(),
+            })
+        }
     };
+
+    let sm = groups
+        .lock()
+        .unwrap()
+        .get(&group)
+        .map(|g| g.state_machine.clone());
+    let (local_index, local_term) = match &sm {
+        Some(sm) => sm.last_applied().await.unwrap_or((0, 0)),
+        None => (0, 0),
+    };
+    if !log_pos_newer(
+        fetched.last_term,
+        fetched.last_index,
+        local_term,
+        local_index,
+    ) {
+        return Ok(RecoverOutcome::SkippedNotNewer {
+            local_index,
+            ad_index: fetched.last_index,
+        });
+    }
+
     let snapshot_id = fetched
         .snapshot_id
         .clone()
@@ -1312,7 +1381,6 @@ async fn daisy_sync_once<S: StateMachine>(
         )
         .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}")))?;
 
-    let sm = groups.lock().unwrap().get(&group).map(|g| g.state_machine.clone());
     if let Some(sm) = sm {
         sm.install_durable_snapshot(
             fetched.last_index,
@@ -1340,4 +1408,9 @@ async fn daisy_sync_once<S: StateMachine>(
         last_index: fetched.last_index,
         last_term: fetched.last_term,
     })
+}
+
+/// True when `(remote_term, remote_index)` is strictly newer than local.
+fn log_pos_newer(remote_term: u64, remote_index: u64, local_term: u64, local_index: u64) -> bool {
+    (remote_term, remote_index) > (local_term, local_index)
 }

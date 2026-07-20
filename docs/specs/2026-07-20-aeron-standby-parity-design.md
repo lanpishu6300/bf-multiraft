@@ -184,7 +184,8 @@ MultiRaft::spawn_daisy_sync_loop(groups)   // background when daisy_upstream_bas
 Behavior (Standby B):
 
 - May still be an openraft learner **or** snapshot-only (tests: only A is `add_learner`'d; B syncs from A HTTP and re-advertises).
-- On sync: pull → write local `SnapshotCatalog` → install FSM if group exists → `record_snapshot_ad` with B's `admin_advertise_addr` fetch_url.
+- On sync: pull → if upstream `(last_term, last_index)` is not strictly newer than local SM applied → `SkippedNotNewer` (no install / no regress).
+- Else: write local `SnapshotCatalog` → install FSM if group exists → `record_snapshot_ad` with B's `admin_advertise_addr` fetch_url.
 
 **Limitation:** this is a **snapshot chain**, not Aeron-style log daisy / openraft append redirect.
 
@@ -221,7 +222,7 @@ ClusterConfig {
 ```text
 MultiRaft::read_stale(group, f) -> Result<StaleRead<R>>
   StaleRead { value, applied_index, applied_term }
-MultiRaft::local_applied(group) -> Option<(index, term)>
+MultiRaft::local_applied(group) -> Option<(index, term)>  // async; from SM store
 MultiRaft::stale_queries_enabled() -> bool
 ```
 
@@ -229,8 +230,8 @@ MultiRaft::stale_queries_enabled() -> bool
 
 - If `enable_stale_queries` is false → `MultiRaftError::StaleQueriesDisabled`.
 - Closure `f` runs under the same FSM lock as `with_fsm` (read-only by convention).
+- `applied_index` / `applied_term` come from the SM store (consistent after durable snapshot install).
 - Demo: `GET /groups/{id}/stale` (403 when disabled); Standby also serves stale on `GET /groups/{id}/value`.
-
 **Acceptance (P3)**
 
 1. Learner Standby with flag on: after catch-up, `read_stale` returns value matching leader linearizable read and `applied_index > 0`.
