@@ -32,10 +32,10 @@ Constraints:
 | A5 | Lazy pull on voter restart | Manual / test catalog copy | **Auto pull from `fetch_url` when ad newer** | **P0** |
 | A6 | On-demand replicate tool | Demo curl only | Admin `POST /admin/replicate_standby_snapshot` | P0 |
 | A7 | Standby must not back-pressure leader | Not controlled | **Throttle append/replication toward standby peers** | **P0** |
-| A8 | Daisy-chain standby←standby | — | Optional log source peer for Standby | P2 |
+| A8 | Daisy-chain standby←standby | — | **Snapshot daisy** via `daisy_upstream_base` (not full openraft log redirect) | **P2** |
 | A9 | Warm DR / TransitionModule | — | **`promote_standby` Learner→Voter** (+ demote) | **P1** |
-| A10 | Multi-standby / selective services | Single standby | Multi learner + per-group enable flags | P2 |
-| A11 | Archive recording semantics | Directory catalog | Streaming fetch, resume, checksum verify (have sha256) | P1/P2 |
+| A10 | Multi-standby / selective services | Single standby | Multi learner + `best_snapshot_ad` newest pick | **P2** |
+| A11 | Archive recording semantics | Directory catalog | **HTTP Range** chunked fetch + resume temp + sha256 | **P2** |
 | A12 | Backup query / auth / PremiumClusterTool | — | Ops CLI / richer admin; auth out of scope | P2 |
 | A13 | Clustered services on standby (slow query) | — | Pluggable read-only FSM hooks | P3 |
 
@@ -62,11 +62,16 @@ Constraints:
             (P1 Transition) promote_standby → change_membership
 ```
 
-Daisy-chain (P2):
+Daisy-chain (P2, snapshot bandwidth — pragmatic):
 
 ```text
-Leader ──► Standby-A ──► Standby-B (log follow from A, not Leader)
+Leader ──► Standby-A (learner) ──HTTP snapshot──► Standby-B (daisy, optional not learner)
+                                      │
+                                      └── B re-advertises fetch_url for voters
 ```
+
+openraft cannot natively redirect learner replication; P2 approximates Aeron daisy for
+**snapshot distribution**, not full log follow from a peer.
 
 ---
 
@@ -151,13 +156,50 @@ Safety:
 
 ---
 
-## 5. Phase P2 — Daisy-chain & multi-standby (design only until scheduled)
+## 5. Phase P2 — Daisy-chain, multi-standby, streaming fetch (**specified + implemented**)
 
-| Item | Design sketch |
-|------|----------------|
-| Daisy-chain | Standby config `log_source: Leader | Peer(NodeId)`; follow appends only from source (may require app-level log shipper if openraft cannot redirect). Prefer: secondary standby as learner of a **second** group or external shipper — **spike before commit**. |
-| Multi-standby | `add_standby` N times; ads pick newest among all fetch_urls. |
-| Streaming fetch | Chunked GET / range requests; resume token in catalog meta. |
+### 5.1 Multi-standby
+
+- Leader may `add_standby` for multiple learner ids.
+- `try_recover_from_standby_ads` / `MultiRaft::best_snapshot_ad(group)` pick max `(last_term, last_index)`.
+
+### 5.2 Daisy-chain snapshot distribution
+
+Config (`ClusterConfig`):
+
+```rust
+/// Pull snapshots from this upstream Standby admin base (e.g. "http://127.0.0.1:23103").
+/// Path: `{base}/snapshots/{group}/latest`
+pub daisy_upstream_base: Option<String>,
+pub daisy_sync_interval_ms: u64, // default 2000
+```
+
+APIs:
+
+```text
+MultiRaft::sync_from_daisy_upstream(group) -> Result<RecoverOutcome>
+MultiRaft::spawn_daisy_sync_loop(groups)   // background when daisy_upstream_base set
+```
+
+Behavior (Standby B):
+
+- May still be an openraft learner **or** snapshot-only (tests: only A is `add_learner`'d; B syncs from A HTTP and re-advertises).
+- On sync: pull → write local `SnapshotCatalog` → install FSM if group exists → `record_snapshot_ad` with B's `admin_advertise_addr` fetch_url.
+
+**Limitation:** this is a **snapshot chain**, not Aeron-style log daisy / openraft append redirect.
+
+### 5.3 Streaming / chunked fetch with resume
+
+- Demo/library fetch: `GET /snapshots/:id/latest` supports `Range: bytes=start-end` → `206` + `Content-Range` + `Accept-Ranges: bytes` (full GET still `200`).
+- `pull_and_install_snapshot` uses `pull_snapshot_chunked` (default chunk `snapshot_fetch_chunk_bytes = 65536`): probe size → Range download into temp under `data_dir/snap-fetch-tmp` (or `std::env::temp_dir`) → sha256 verify → install → delete temp; partial temp enables resume.
+
+### 5.4 Acceptance (P2)
+
+1. 3 voters + 2 standbys; both ads present; recover picks newer.
+2. Daisy B syncs from A HTTP; B catalog matches; voter recovers from B `fetch_url`.
+3. Range chunked pull installs correctly; mid-fail resume works via partial temp.
+
+Tests: `crates/multiraft-net/tests/standby_p2.rs`. Demo: `STANDBY=2` / `DAISY=1` or `DAISY_UPSTREAM=...`.
 
 ---
 
@@ -185,12 +227,13 @@ Allow Standby to register **read-only** query handlers against local FSM (`with_
 | `ClusterConfig` standby throttle fields | P0 |
 | `pull_and_install_snapshot` / `try_recover_from_standby_ads` | P0 |
 | `promote_standby` / `demote_to_standby` | P1 |
-| Tests `standby_snapshot` + `standby_premium` | P0/P1 |
+| `daisy_upstream_base` / `sync_from_daisy_upstream` / Range fetch | P2 |
+| Tests `standby_snapshot` + `standby_premium` + `standby_p2` | P0/P1/P2 |
 
 ---
 
-## 9. Success criteria (end of P1)
+## 9. Success criteria (end of P2)
 
-- Design docs (EN+zh-CN) describe Aeron matrix and phases.
-- P0+P1 APIs implemented and covered by automated tests.
-- Demo can: `STANDBY=1` → trigger → restart voter → auto recover from ad URL → optional promote.
+- Design docs (EN+zh-CN) describe Aeron matrix and phases through P2.
+- P0+P1+P2 APIs implemented and covered by automated tests.
+- Demo can: `STANDBY=1` → trigger → restart voter → auto recover; optional promote; optional `DAISY=1` snapshot chain.

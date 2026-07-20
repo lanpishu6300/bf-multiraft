@@ -28,5 +28,6 @@ tonic-build = { workspace = true }
 [dev-dependencies]
 axum = "0.7"
 porcupine-rs = "0.3"
+sha2 = { workspace = true }
 tempfile = "3"
 tracing-subscriber = { workspace = true }

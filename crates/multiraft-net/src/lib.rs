@@ -14,6 +14,7 @@ mod multiraft;
 mod network;
 mod node;
 mod router;
+mod snapshot_fetch;
 mod standby_throttle;
 
 pub use conn_metrics::ConnMetrics;
@@ -32,6 +33,8 @@ pub use router::NodeRx;
 pub use router::NodeTx;
 pub use router::Router;
 pub use router::RouterError;
+pub use snapshot_fetch::FetchedSnapshot;
+pub use snapshot_fetch::pull_snapshot_chunked;
 pub use standby_throttle::StandbyThrottle;
 
 use serde::Serialize;

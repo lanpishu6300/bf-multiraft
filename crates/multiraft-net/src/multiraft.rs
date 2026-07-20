@@ -35,9 +35,6 @@ use openraft::async_runtime::WatchReceiver;
 use openraft::error::InitializeError;
 use openraft::error::RaftError;
 use openraft::type_config::TypeConfigExt;
-use sha2::Digest;
-use sha2::Sha256;
-
 use crate::grpc::GrpcRouter;
 use crate::grpc::GrpcServer;
 use crate::network::GrpcNetworkFactory;
@@ -46,6 +43,7 @@ use crate::node::GroupApp;
 use crate::node::GroupMap;
 use crate::node::Node;
 use crate::router::Router;
+use crate::snapshot_fetch::pull_snapshot_chunked;
 use crate::standby_throttle::StandbyThrottle;
 use multiraft_core::ClusterConfig;
 use multiraft_core::GroupId;
@@ -405,52 +403,45 @@ impl<S: StateMachine> MultiRaft<S> {
         self.standby_throttle.standby_ids()
     }
 
-    /// HTTP GET `fetch_url`, verify sha256, install into the local FSM.
+    /// Newest local snapshot advertisement for `group` by `(last_term, last_index)`.
+    pub fn best_snapshot_ad(&self, group: u64) -> Option<SnapshotAdvertisement> {
+        self.snapshot_ads()
+            .into_iter()
+            .filter(|a| a.group == group && !a.fetch_url.is_empty())
+            .max_by_key(|a| (a.last_term, a.last_index))
+    }
+
+    /// HTTP GET `fetch_url` (chunked Range when possible), verify sha256, install into FSM.
     pub async fn pull_and_install_snapshot(
         &self,
         group: u64,
         fetch_url: &str,
     ) -> Result<(), MultiRaftError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("reqwest client: {e}")))?;
-        let resp = client
-            .get(fetch_url)
-            .send()
+        let fetched = self
+            .fetch_snapshot_bytes(fetch_url)
             .await
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("fetch {fetch_url}: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
-                "fetch {fetch_url}: HTTP {}",
-                resp.status()
-            )));
-        }
-        let headers = resp.headers().clone();
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("fetch body: {e}")))?
-            .to_vec();
+            .map_err(MultiRaftError::Other)?;
+        self.install_durable_snapshot(
+            group,
+            fetched.last_index,
+            fetched.last_term,
+            fetched.data,
+        )
+        .await
+    }
 
-        let last_index = header_u64(&headers, "x-snapshot-index").ok_or_else(|| {
-            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Index header"))
-        })?;
-        let last_term = header_u64(&headers, "x-snapshot-term").ok_or_else(|| {
-            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Term header"))
-        })?;
-        let expected_sha = header_str(&headers, "x-snapshot-sha256").ok_or_else(|| {
-            MultiRaftError::Other(anyhow::anyhow!("missing X-Snapshot-Sha256 header"))
-        })?;
-        let actual_sha = hex_sha256(&body);
-        if actual_sha != expected_sha {
-            return Err(MultiRaftError::Other(anyhow::anyhow!(
-                "snapshot sha256 mismatch: expected {expected_sha}, got {actual_sha}"
-            )));
-        }
-        let _snapshot_id = header_str(&headers, "x-snapshot-id");
-        self.install_durable_snapshot(group, last_index, last_term, body)
-            .await
+    /// Fetch snapshot bytes via chunked Range download (resume temp under data_dir / temp).
+    pub async fn fetch_snapshot_bytes(
+        &self,
+        fetch_url: &str,
+    ) -> Result<crate::snapshot_fetch::FetchedSnapshot, anyhow::Error> {
+        let chunk = self.config.snapshot_fetch_chunk_bytes.max(1);
+        let temp_dir = if self.config.data_dir.as_os_str().is_empty() {
+            std::env::temp_dir().join("multiraft-snap-fetch")
+        } else {
+            self.config.data_dir.join("snap-fetch-tmp")
+        };
+        pull_snapshot_chunked(fetch_url, chunk, &temp_dir).await
     }
 
     /// Pick the newest local snapshot ad for `group` and pull if newer than local applied.
@@ -458,12 +449,7 @@ impl<S: StateMachine> MultiRaft<S> {
         &self,
         group: u64,
     ) -> Result<RecoverOutcome, MultiRaftError> {
-        let ad = self
-            .snapshot_ads()
-            .into_iter()
-            .filter(|a| a.group == group && !a.fetch_url.is_empty())
-            .max_by_key(|a| (a.last_term, a.last_index));
-        let Some(ad) = ad else {
+        let Some(ad) = self.best_snapshot_ad(group) else {
             return Ok(RecoverOutcome::SkippedNoAd);
         };
 
@@ -483,6 +469,135 @@ impl<S: StateMachine> MultiRaft<S> {
             Err(MultiRaftError::UnknownGroup(g)) => Err(MultiRaftError::UnknownGroup(g)),
             Err(e) => Ok(RecoverOutcome::FetchFailed(e.to_string())),
         }
+    }
+
+    /// Pull latest snapshot from [`ClusterConfig::daisy_upstream_base`] into local
+    /// catalog + FSM, then refresh a local [`SnapshotAdvertisement`].
+    pub async fn sync_from_daisy_upstream(
+        &self,
+        group: u64,
+    ) -> Result<RecoverOutcome, MultiRaftError> {
+        let base = self.config.daisy_upstream_base.as_ref().ok_or_else(|| {
+            MultiRaftError::Other(anyhow::anyhow!(
+                "sync_from_daisy_upstream: daisy_upstream_base not set"
+            ))
+        })?;
+        let url = format!(
+            "{}/snapshots/{group}/latest",
+            base.trim_end_matches('/')
+        );
+
+        let fetched = match self.fetch_snapshot_bytes(&url).await {
+            Ok(f) => f,
+            Err(e) => return Ok(RecoverOutcome::FetchFailed(e.to_string())),
+        };
+
+        let snapshot_id = fetched
+            .snapshot_id
+            .clone()
+            .unwrap_or_else(|| format!("{}-{}", fetched.last_index, fetched.last_term));
+
+        if let Some(catalog) = self.snapshot_rt.catalog.as_ref() {
+            catalog
+                .write(
+                    group,
+                    fetched.last_index,
+                    fetched.last_term,
+                    &snapshot_id,
+                    &fetched.data,
+                )
+                .map_err(|e| {
+                    MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}"))
+                })?;
+        } else {
+            return Err(MultiRaftError::Other(anyhow::anyhow!(
+                "sync_from_daisy_upstream: SnapshotCatalog required (StandbyOffload + data_dir)"
+            )));
+        }
+
+        if self.raft(group).is_some() {
+            self.install_durable_snapshot(
+                group,
+                fetched.last_index,
+                fetched.last_term,
+                fetched.data.clone(),
+            )
+            .await?;
+        }
+
+        let fetch_url = self
+            .snapshot_rt
+            .admin_advertise_addr
+            .map(|addr| format!("http://{addr}/snapshots/{group}/latest"))
+            .unwrap_or_default();
+        let ad = SnapshotAdvertisement {
+            group,
+            last_index: fetched.last_index,
+            last_term: fetched.last_term,
+            snapshot_id,
+            size: fetched.data.len() as u64,
+            sha256_hex: fetched.sha256_hex,
+            fetch_url,
+        };
+        self.record_snapshot_ad(ad);
+
+        Ok(RecoverOutcome::Installed {
+            last_index: fetched.last_index,
+            last_term: fetched.last_term,
+        })
+    }
+
+    /// Background loop: when `daisy_upstream_base` is set, periodically
+    /// [`Self::sync_from_daisy_upstream`] for each group (interval from config).
+    pub fn spawn_daisy_sync_loop(&self, groups: Vec<u64>) {
+        let Some(base) = self.config.daisy_upstream_base.clone() else {
+            tracing::debug!("spawn_daisy_sync_loop: daisy_upstream_base unset, skip");
+            return;
+        };
+        let interval = Duration::from_millis(self.config.daisy_sync_interval_ms.max(1));
+        let chunk = self.config.snapshot_fetch_chunk_bytes.max(1);
+        let temp_dir = if self.config.data_dir.as_os_str().is_empty() {
+            std::env::temp_dir().join("multiraft-snap-fetch")
+        } else {
+            self.config.data_dir.join("snap-fetch-tmp")
+        };
+        let snapshot_rt = self.snapshot_rt.clone();
+        let groups_map = self.groups.clone();
+        let admin = self.snapshot_rt.admin_advertise_addr;
+
+        TypeConfig::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                for &group in &groups {
+                    match daisy_sync_once(
+                        &base,
+                        group,
+                        chunk,
+                        &temp_dir,
+                        &snapshot_rt,
+                        &groups_map,
+                        admin,
+                    )
+                    .await
+                    {
+                        Ok(RecoverOutcome::Installed { last_index, .. }) => {
+                            tracing::info!(
+                                group,
+                                last_index,
+                                "daisy sync installed snapshot from upstream"
+                            );
+                        }
+                        Ok(other) => {
+                            tracing::debug!(group, ?other, "daisy sync outcome");
+                        }
+                        Err(e) => {
+                            tracing::warn!(group, error = %e, "daisy sync failed");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Leader-only: promote a Standby learner to voter (`change_membership` AddVoterIds).
@@ -1094,18 +1209,65 @@ pub async fn wait_for_leader(
     None
 }
 
-fn hex_sha256(data: &[u8]) -> String {
-    let digest = Sha256::digest(data);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
+async fn daisy_sync_once<S: StateMachine>(
+    base: &str,
+    group: GroupId,
+    chunk: usize,
+    temp_dir: &std::path::Path,
+    snapshot_rt: &SnapshotRuntime,
+    groups: &GroupMap<S>,
+    admin: Option<std::net::SocketAddr>,
+) -> Result<RecoverOutcome, MultiRaftError> {
+    let url = format!("{}/snapshots/{group}/latest", base.trim_end_matches('/'));
+    let fetched = match pull_snapshot_chunked(&url, chunk, temp_dir).await {
+        Ok(f) => f,
+        Err(e) => return Ok(RecoverOutcome::FetchFailed(e.to_string())),
+    };
+    let snapshot_id = fetched
+        .snapshot_id
+        .clone()
+        .unwrap_or_else(|| format!("{}-{}", fetched.last_index, fetched.last_term));
+    let catalog = snapshot_rt.catalog.as_ref().ok_or_else(|| {
+        MultiRaftError::Other(anyhow::anyhow!(
+            "daisy sync: SnapshotCatalog required (StandbyOffload + data_dir)"
+        ))
+    })?;
+    catalog
+        .write(
+            group,
+            fetched.last_index,
+            fetched.last_term,
+            &snapshot_id,
+            &fetched.data,
+        )
+        .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy catalog write: {e}")))?;
 
-fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-}
+    let sm = groups.lock().unwrap().get(&group).map(|g| g.state_machine.clone());
+    if let Some(sm) = sm {
+        sm.install_durable_snapshot(
+            fetched.last_index,
+            fetched.last_term,
+            true,
+            fetched.data.clone(),
+        )
+        .await
+        .map_err(|e| MultiRaftError::Other(anyhow::anyhow!("daisy install: {e}")))?;
+    }
 
-fn header_u64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
-    header_str(headers, name)?.parse().ok()
+    let fetch_url = admin
+        .map(|addr| format!("http://{addr}/snapshots/{group}/latest"))
+        .unwrap_or_default();
+    snapshot_rt.record_ad(SnapshotAdvertisement {
+        group,
+        last_index: fetched.last_index,
+        last_term: fetched.last_term,
+        snapshot_id,
+        size: fetched.data.len() as u64,
+        sha256_hex: fetched.sha256_hex,
+        fetch_url,
+    });
+    Ok(RecoverOutcome::Installed {
+        last_index: fetched.last_index,
+        last_term: fetched.last_term,
+    })
 }

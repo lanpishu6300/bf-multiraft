@@ -94,9 +94,13 @@ under `{data_dir}/snapshots/`. Voters pull advertisements on recovery.
 Details: [specs/2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md)
 · [中文](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md).
 
-Premium parity (HTTP pull from ads, standby replication throttle, promote/demote):
+Premium parity (HTTP pull from ads, standby replication throttle, promote/demote,
+multi-standby newest-ad pick, **snapshot daisy-chain** via `daisy_upstream_base`,
+HTTP Range chunked fetch with resume):
 [specs/2026-07-20-aeron-standby-parity-design.md](./specs/2026-07-20-aeron-standby-parity-design.md)
 · [中文](./specs/2026-07-20-aeron-standby-parity-design.zh-CN.md).
+
+P2 daisy is a **snapshot distribution chain** (not openraft log redirect).
 
 ## Upstream pin
 
