@@ -84,6 +84,15 @@ RMQ (per-symbol)
     → FSM 适配器 → 撮合引擎 FSM
 ```
 
+## Standby 异步快照
+
+可选 `SnapshotMode::StandbyOffload`：voter 在 `build_snapshot` 中不再同步 dump FSM。
+**Standby**（openraft Learner）应用魔术 trigger 日志，短暂 freeze FSM，再经
+`spawn_blocking` 写入 `{data_dir}/snapshots/` 持久 catalog。voter 恢复时按广告拉取。
+
+详情：[specs/2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md)
+· [English](./specs/2026-07-20-standby-async-snapshot-design.md)。
+
 ## 上游锁定
 
 | Crate | Version |

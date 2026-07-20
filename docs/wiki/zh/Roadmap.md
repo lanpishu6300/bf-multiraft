@@ -11,12 +11,16 @@
 - [x] 本地 Jepsen（counter + kill nemesis）
 - [x] Consistency Contract + `read_linearizable`
 
+## 一期加固 / 库能力
+
+- [x] Standby 异步快照（对齐 Aeron 的 Learner 卸载）— 见 [设计](../../specs/2026-07-20-standby-async-snapshot-design.zh-CN.md)
+
 ## 二期（下游应用）
 
 - [ ] 可选 Leader 消费 RMQ → `propose`
 - [ ] 可插拔撮合引擎 FSM + 幂等键
 - [ ] 生产指标（propose 延迟、落后 index、切主次数）
-- [ ] 持久化 / snapshot 策略加固
+- [x] 持久化 / snapshot 策略加固（StandbyOffload catalog；更多 hardening 待续）
 
 ## 明确不做（近期）
 

@@ -84,6 +84,16 @@ matching process / ingress shell (RMQ consumer, Leader only)
     → FSM adapter → matching engine FSM
 ```
 
+## Standby async snapshot
+
+Optional `SnapshotMode::StandbyOffload`: voters never sync-dump the FSM in
+`build_snapshot`. A **Standby** (openraft Learner) applies a magic trigger log,
+freezes the FSM briefly, then `spawn_blocking` serializes into a durable catalog
+under `{data_dir}/snapshots/`. Voters pull advertisements on recovery.
+
+Details: [specs/2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md)
+· [中文](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md).
+
 ## Upstream pin
 
 | Crate | Version |
