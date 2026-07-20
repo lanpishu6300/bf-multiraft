@@ -24,4 +24,12 @@ pub trait StateMachine: Send + 'static {
     fn snapshot(&self, group: GroupId) -> Result<Vec<u8>, Self::Error>;
 
     fn restore(&mut self, group: GroupId, snapshot: &[u8]) -> Result<(), Self::Error>;
+
+    /// Consistent freeze for async snapshot. Default: [`Self::snapshot`].
+    ///
+    /// Standby holds the SM lock only for this call, then serializes/fsyncs
+    /// off-lock via `spawn_blocking`.
+    fn freeze_for_snapshot(&self, group: GroupId) -> Result<Vec<u8>, Self::Error> {
+        self.snapshot(group)
+    }
 }

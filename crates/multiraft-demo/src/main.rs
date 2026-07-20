@@ -23,6 +23,9 @@ use clap::Parser;
 use clap::ValueEnum;
 use multiraft_core::ClusterConfig;
 use multiraft_core::MultiRaftError;
+use multiraft_core::NodeRole;
+use multiraft_core::SnapshotAdvertisement;
+use multiraft_core::SnapshotMode;
 use multiraft_fsm::CounterFsm;
 use multiraft_net::MultiRaft;
 use multiraft_net::wait_for_leader;
@@ -38,6 +41,13 @@ enum Mode {
     Cluster,
     /// One OS process = one Raft node via `start_grpc`.
     Node,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum RoleArg {
+    #[default]
+    Voter,
+    Standby,
 }
 
 #[derive(Debug, Parser)]
@@ -72,9 +82,13 @@ struct Args {
     #[arg(long, default_value = ".demo-data")]
     data_dir: PathBuf,
 
-    /// Peer / logical node count (default 3).
+    /// Peer / logical node count (default 3). Voters only; standby is extra when `--role standby`.
     #[arg(long, default_value_t = 3)]
     nodes: u64,
+
+    /// Local Raft role (`voter` or `standby` learner).
+    #[arg(long, value_enum, default_value_t = RoleArg::Voter)]
+    role: RoleArg,
 
     /// Disable the background propose_loop (for Jepsen / external clients).
     #[arg(long, default_value_t = false)]
@@ -193,6 +207,10 @@ async fn run_cluster(args: Args) -> anyhow::Result<()> {
             heartbeat_interval_ms: 100,
             election_timeout_min_ms: 300,
             election_timeout_max_ms: 600,
+            role: NodeRole::Voter,
+            snapshot_mode: SnapshotMode::Disabled,
+            snapshot_keep: 2,
+            admin_advertise_addr: Some(([127, 0, 0, 1], args.base_port).into()),
         })
         .collect();
 
@@ -260,13 +278,32 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     let node_id = args
         .node_id
         .ok_or_else(|| anyhow::anyhow!("--node-id is required for --mode node"))?;
-    if node_id < 1 || node_id > args.nodes {
-        anyhow::bail!("--node-id must be in 1..={}", args.nodes);
+
+    let role = match args.role {
+        RoleArg::Voter => NodeRole::Voter,
+        RoleArg::Standby => NodeRole::Standby,
+    };
+    let standby_offload = role == NodeRole::Standby
+        || std::env::var("STANDBY").ok().as_deref() == Some("1");
+    let snapshot_mode = if standby_offload {
+        SnapshotMode::StandbyOffload
+    } else {
+        SnapshotMode::Disabled
+    };
+
+    // Voters: 1..=nodes. Standby may use node_id == nodes+1 (or any id outside members).
+    let max_peer = args.nodes.max(node_id);
+    if node_id < 1 {
+        anyhow::bail!("--node-id must be >= 1");
+    }
+    if role == NodeRole::Voter && node_id > args.nodes {
+        anyhow::bail!("voter --node-id must be in 1..={}", args.nodes);
     }
 
-    let peers = peer_addrs(args.base_port, args.nodes);
+    let peers = peer_addrs(args.base_port, max_peer);
     let group_ids: Vec<u64> = (0..args.groups).collect();
     let members: Vec<u64> = (1..=args.nodes).collect();
+    let admin_addr = admin_addr_for_node(args.base_port, node_id);
 
     // Script passes `{root}/node-{id}`; use that path directly.
     std::fs::create_dir_all(&args.data_dir)?;
@@ -278,10 +315,16 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         heartbeat_interval_ms: 100,
         election_timeout_min_ms: 300,
         election_timeout_max_ms: 600,
+        role,
+        snapshot_mode,
+        snapshot_keep: 2,
+        admin_advertise_addr: Some(admin_addr),
     };
 
     info!(
         node_id,
+        ?role,
+        ?snapshot_mode,
         nodes = args.nodes,
         groups = args.groups,
         base_port = args.base_port,
@@ -316,12 +359,31 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("create_group {gid} failed after retries: {e}"));
     }
 
-    wait_local_sees_leaders(&node, &group_ids, Duration::from_secs(30)).await?;
+    if role == NodeRole::Voter {
+        wait_local_sees_leaders(&node, &group_ids, Duration::from_secs(30)).await?;
+    } else {
+        info!(node_id, "standby: waiting for add_learner from leader");
+    }
 
     let nid = node.node_id();
     node.on_leader_change(move |group, leader| {
         info!(node = nid, group, ?leader, "leader change");
     });
+
+    // Standby: push ads to voter admin ports after async snapshot.
+    if role == NodeRole::Standby {
+        let voter_admins: Vec<SocketAddr> = (1..=args.nodes)
+            .map(|id| admin_addr_for_node(args.base_port, id))
+            .collect();
+        node.on_snapshot_ready(move |ad| {
+            let voter_admins = voter_admins.clone();
+            tokio::spawn(async move {
+                if let Err(e) = publish_snapshot_ad(&voter_admins, &ad).await {
+                    warn!(error = %e, "failed to publish snapshot ad to voters");
+                }
+            });
+        });
+    }
 
     let state = Arc::new(DemoState {
         nodes: vec![node],
@@ -330,17 +392,16 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
         node_id_base: node_id << 32,
     });
 
-    let admin_addr = admin_addr_for_node(args.base_port, node_id);
     spawn_admin(admin_addr, Arc::clone(&state));
     info!(
         %admin_addr,
         node_id,
         "admin HTTP listening (GET /groups/{{id}}/value, POST /groups/{{id}}/inc, \
-         GET /metrics/links)"
+         GET /metrics/links, snapshot admin routes)"
     );
 
-    if args.no_auto_propose {
-        info!(node_id, "--no-auto-propose: skipping background propose_loop");
+    if args.no_auto_propose || role == NodeRole::Standby {
+        info!(node_id, "skipping background propose_loop (standby or --no-auto-propose)");
     } else {
         tokio::spawn({
             let s = Arc::clone(&state);
@@ -349,6 +410,42 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     }
 
     status_loop(state).await
+}
+
+async fn publish_snapshot_ad(
+    voter_admins: &[SocketAddr],
+    ad: &SnapshotAdvertisement,
+) -> anyhow::Result<()> {
+    let body = serde_json::to_vec(ad)?;
+    for &addr in voter_admins {
+        if let Err(e) = http_post_json(addr, "/admin/snapshot_ads", &body).await {
+            warn!(%addr, error = %e, "POST snapshot ad failed");
+        }
+    }
+    Ok(())
+}
+
+async fn http_post_json(addr: SocketAddr, path: &str, body: &[u8]) -> anyhow::Result<()> {
+    let path = path.to_string();
+    let body = body.to_vec();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        use std::io::Write;
+        use std::net::TcpStream;
+
+        let mut stream = TcpStream::connect(addr)?;
+        let header = format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes())?;
+        stream.write_all(&body)?;
+        let mut resp = String::new();
+        let _ = stream.read_to_string(&mut resp);
+        Ok::<(), anyhow::Error>(())
+    })
+    .await??;
+    Ok(())
 }
 
 fn validate_counts(args: &Args) -> anyhow::Result<()> {
@@ -519,11 +616,172 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
         .route("/groups/:id/inc", post(group_inc))
         .route("/metrics/links", get(metrics_links))
         .route("/admin/shutdown_node/:id", post(shutdown_node))
+        .route("/admin/standby_snapshot/:id", post(admin_standby_snapshot))
+        .route("/admin/snapshot_ads", post(admin_post_snapshot_ad))
+        .route("/admin/snapshot_ads", get(admin_get_snapshot_ads))
+        .route("/admin/add_standby/:group/:standby_id", post(admin_add_standby))
+        .route("/snapshots/:id/latest", get(snapshot_latest))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn admin_standby_snapshot(
+    State(state): State<Arc<DemoState>>,
+    Path(id): Path<u64>,
+) -> Result<Json<IncOkResp>, (StatusCode, Json<ErrResp>)> {
+    if !state.group_ids.contains(&id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("unknown group {id}"),
+            }),
+        ));
+    }
+    for n in &state.nodes {
+        if !n.is_leader(id) {
+            continue;
+        }
+        match n.trigger_standby_snapshot(id).await {
+            Ok(ok) => {
+                return Ok(Json(IncOkResp {
+                    ok: true,
+                    index: ok.index,
+                    term: ok.term,
+                    group: id,
+                }));
+            }
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local leader".into(),
+        }),
+    ))
+}
+
+async fn admin_post_snapshot_ad(
+    State(state): State<Arc<DemoState>>,
+    Json(ad): Json<SnapshotAdvertisement>,
+) -> StatusCode {
+    if let Some(n) = state.nodes.first() {
+        n.record_snapshot_ad(ad);
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn admin_get_snapshot_ads(
+    State(state): State<Arc<DemoState>>,
+) -> Json<Vec<SnapshotAdvertisement>> {
+    let ads = state
+        .nodes
+        .first()
+        .map(|n| n.snapshot_ads())
+        .unwrap_or_default();
+    Json(ads)
+}
+
+async fn admin_add_standby(
+    State(state): State<Arc<DemoState>>,
+    Path((group, standby_id)): Path<(u64, u64)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    for n in &state.nodes {
+        if !n.is_leader(group) {
+            continue;
+        }
+        match n.add_standby(group, standby_id).await {
+            Ok(()) => {
+                return Ok(Json(serde_json::json!({
+                    "ok": true,
+                    "group": group,
+                    "standby_id": standby_id,
+                })));
+            }
+            Err(MultiRaftError::NotLeader { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(ErrResp {
+                        ok: false,
+                        error: e.to_string(),
+                    }),
+                ));
+            }
+        }
+    }
+    Err((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrResp {
+            ok: false,
+            error: "no local leader".into(),
+        }),
+    ))
+}
+
+#[derive(Serialize)]
+struct SnapshotLatestMeta {
+    group: u64,
+    last_index: u64,
+    last_term: u64,
+    snapshot_id: String,
+    size: u64,
+    sha256_hex: String,
+}
+
+async fn snapshot_latest(
+    State(state): State<Arc<DemoState>>,
+    Path(id): Path<u64>,
+) -> Result<(axum::http::HeaderMap, Vec<u8>), StatusCode> {
+    let Some(n) = state.nodes.first() else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let Some(catalog) = n.snapshot_catalog() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let Some(entry) = catalog.latest(id).ok().flatten() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let data = catalog
+        .read(id, &entry.snapshot_id)
+        .ok()
+        .flatten()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let meta = SnapshotLatestMeta {
+        group: entry.group,
+        last_index: entry.last_index,
+        last_term: entry.last_term,
+        snapshot_id: entry.snapshot_id,
+        size: entry.size,
+        sha256_hex: entry.sha256_hex,
+    };
+    let mut headers = axum::http::HeaderMap::new();
+    if let Ok(v) = serde_json::to_string(&meta) {
+        if let Ok(hv) = axum::http::HeaderValue::from_str(&v) {
+            headers.insert("x-snapshot-meta", hv);
+        }
+    }
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    Ok((headers, data))
 }
 
 /// Propose `CounterFsm::encode_add` on a local leader (or any local node with

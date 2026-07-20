@@ -20,6 +20,7 @@ Self-contained docs for the **multiraft** GitHub repository (no links outside th
 | Spec (EN) | 中文 | Topic |
 |-----------|------|-------|
 | [2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) | [2026-07-18-multiraft-design.zh-CN.md](./specs/2026-07-18-multiraft-design.zh-CN.md) | Thin Multi-Raft for matching HA |
+| [2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md) | [2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md) | Standby async snapshot (Aeron-aligned) |
 
 ## Plans
 

@@ -20,6 +20,7 @@
 | Spec (EN) | 中文 | 主题 |
 |-----------|------|------|
 | [2026-07-18-multiraft-design.md](./specs/2026-07-18-multiraft-design.md) | [2026-07-18-multiraft-design.zh-CN.md](./specs/2026-07-18-multiraft-design.zh-CN.md) | 撮合高可用薄 Multi-Raft |
+| [2026-07-20-standby-async-snapshot-design.md](./specs/2026-07-20-standby-async-snapshot-design.md) | [2026-07-20-standby-async-snapshot-design.zh-CN.md](./specs/2026-07-20-standby-async-snapshot-design.zh-CN.md) | Standby 异步快照（对齐 Aeron） |
 
 ## 计划（plans）
 

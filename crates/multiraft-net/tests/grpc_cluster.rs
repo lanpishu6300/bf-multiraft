@@ -34,6 +34,10 @@ async fn grpc_three_node_propose() {
             heartbeat_interval_ms: 100,
             election_timeout_min_ms: 300,
             election_timeout_max_ms: 600,
+            role: Default::default(),
+            snapshot_mode: Default::default(),
+            snapshot_keep: 2,
+            admin_advertise_addr: None,
         };
         nodes.push(
             MultiRaft::start_grpc(config)

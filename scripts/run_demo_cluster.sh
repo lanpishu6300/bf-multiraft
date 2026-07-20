@@ -6,6 +6,10 @@
 # Raft gRPC:
 #   node N → 127.0.0.1:(BASE_PORT + N - 1)
 #
+# Optional Standby (Learner):
+#   STANDBY=1 → also start node 4 as --role standby (StandbyOffload),
+#   then curl the leader to add_standby for group 0.
+#
 # Compatible with macOS Bash 3.2.
 set -euo pipefail
 
@@ -14,6 +18,7 @@ BASE_PORT="${BASE_PORT:-21000}"
 GROUPS="${GROUPS:-10}"
 NODES="${NODES:-3}"
 DATA="${DATA_DIR:-$ROOT/.demo-data}"
+STANDBY="${STANDBY:-0}"
 
 # Jepsen / external clients: disable background propose_loop.
 # Set via JEPSEN=1 or NO_AUTO_PROPOSE=1.
@@ -31,6 +36,11 @@ cargo build -p multiraft-demo --manifest-path "$ROOT/Cargo.toml"
 
 BIN="$ROOT/target/debug/multiraft-demo"
 
+# When Standby is enabled, voters also use StandbyOffload (no hot FSM dump).
+if [[ "$STANDBY" == "1" ]]; then
+  export STANDBY=1
+fi
+
 id=1
 while [[ "$id" -le "$NODES" ]]; do
   NODE_DATA="$DATA/node-$id"
@@ -39,6 +49,7 @@ while [[ "$id" -le "$NODES" ]]; do
     --mode node \
     --node-id "$id" \
     --nodes "$NODES" \
+    --role voter \
     --base-port "$BASE_PORT" \
     --groups "$GROUPS" \
     --data-dir "$NODE_DATA" \
@@ -50,6 +61,24 @@ while [[ "$id" -le "$NODES" ]]; do
   id=$((id + 1))
 done
 
+if [[ "$STANDBY" == "1" ]]; then
+  STANDBY_ID=$((NODES + 1))
+  NODE_DATA="$DATA/node-$STANDBY_ID"
+  mkdir -p "$NODE_DATA"
+  "$BIN" \
+    --mode node \
+    --node-id "$STANDBY_ID" \
+    --nodes "$NODES" \
+    --role standby \
+    --base-port "$BASE_PORT" \
+    --groups "$GROUPS" \
+    --data-dir "$NODE_DATA" \
+    --no-auto-propose \
+    >"$DATA/node-$STANDBY_ID.log" 2>&1 &
+  echo $! >"$DATA/node-$STANDBY_ID.pid"
+  sleep 0.6
+fi
+
 echo "cluster started (${NODES} OS processes × ${GROUPS} groups, gRPC)"
 echo "  data: $DATA"
 id=1
@@ -59,4 +88,39 @@ while [[ "$id" -le "$NODES" ]]; do
   echo "  node ${id}: pid=$(cat "$DATA/node-$id.pid") raft=127.0.0.1:${raft_port} admin=http://127.0.0.1:${admin_port}/groups/0/value log=$DATA/node-$id.log"
   id=$((id + 1))
 done
+
+if [[ "$STANDBY" == "1" ]]; then
+  STANDBY_ID=$((NODES + 1))
+  admin_port=$((BASE_PORT + 100 + STANDBY_ID - 1))
+  raft_port=$((BASE_PORT + STANDBY_ID - 1))
+  echo "  standby ${STANDBY_ID}: pid=$(cat "$DATA/node-$STANDBY_ID.pid") raft=127.0.0.1:${raft_port} admin=http://127.0.0.1:${admin_port}/admin/snapshot_ads log=$DATA/node-$STANDBY_ID.log"
+
+  # Wait briefly for leaders, then add_standby on group 0 via each voter admin until one succeeds.
+  echo "  adding standby ${STANDBY_ID} to group 0..."
+  added=0
+  attempt=1
+  while [[ "$attempt" -le 30 ]]; do
+    id=1
+    while [[ "$id" -le "$NODES" ]]; do
+      admin_port=$((BASE_PORT + 100 + id - 1))
+      if curl -sf -X POST "http://127.0.0.1:${admin_port}/admin/add_standby/0/${STANDBY_ID}" >/dev/null 2>&1; then
+        echo "  add_standby ok via node ${id}"
+        added=1
+        break
+      fi
+      id=$((id + 1))
+    done
+    if [[ "$added" -eq 1 ]]; then
+      break
+    fi
+    sleep 0.5
+    attempt=$((attempt + 1))
+  done
+  if [[ "$added" -ne 1 ]]; then
+    echo "  warning: add_standby did not succeed (cluster may still be electing); retry manually:"
+    echo "    curl -X POST http://127.0.0.1:$((BASE_PORT + 100))/admin/add_standby/0/${STANDBY_ID}"
+  fi
+  echo "  optional trigger: curl -X POST http://127.0.0.1:$((BASE_PORT + 100))/admin/standby_snapshot/0"
+fi
+
 echo "  metrics: http://127.0.0.1:$((BASE_PORT + 100))/metrics/links"
