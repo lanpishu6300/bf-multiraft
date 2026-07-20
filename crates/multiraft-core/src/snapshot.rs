@@ -25,10 +25,45 @@ pub struct SnapshotAdvertisement {
 }
 
 /// Result of auto-recovery from standby snapshot advertisements.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RecoverOutcome {
     Installed { last_index: u64, last_term: u64 },
     SkippedNoAd,
     SkippedNotNewer { local_index: u64, ad_index: u64 },
-    FetchFailed(String),
+    FetchFailed { error: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_outcome_serde_roundtrip() {
+        let cases = [
+            RecoverOutcome::Installed {
+                last_index: 9,
+                last_term: 2,
+            },
+            RecoverOutcome::SkippedNoAd,
+            RecoverOutcome::SkippedNotNewer {
+                local_index: 3,
+                ad_index: 3,
+            },
+            RecoverOutcome::FetchFailed {
+                error: "timeout".into(),
+            },
+        ];
+        for c in cases {
+            let s = serde_json::to_string(&c).unwrap();
+            let back: RecoverOutcome = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, c);
+        }
+        let installed = serde_json::to_value(RecoverOutcome::Installed {
+            last_index: 1,
+            last_term: 1,
+        })
+        .unwrap();
+        assert_eq!(installed["outcome"], "installed");
+    }
 }

@@ -99,8 +99,23 @@ curl -s -X POST http://127.0.0.1:21100/groups/0/inc \
 ```
 
 CLI: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`,
-`--no-auto-propose`. Set `JEPSEN=1` or `NO_AUTO_PROPOSE=1` on
+`--no-auto-propose`, `--role voter|standby`. Set `JEPSEN=1` or `NO_AUTO_PROPOSE=1` on
 `run_demo_cluster.sh` to disable the background propose loop.
+
+### Standby ops (optional)
+
+```bash
+STANDBY=1 ./scripts/run_demo_cluster.sh
+# status / catalog / ads (admin on any voter; Standby is node 4 → :21103)
+curl -s http://127.0.0.1:21100/admin/groups/0/status
+curl -s -X POST http://127.0.0.1:21100/admin/standby_snapshot/0
+curl -s http://127.0.0.1:21103/admin/catalog/0
+curl -s http://127.0.0.1:21100/admin/best_snapshot_ad/0
+curl -s -X POST http://127.0.0.1:21100/admin/replicate_standby_snapshot/0
+curl -s http://127.0.0.1:21103/groups/0/stale
+# warm promote (leader):
+curl -s -X POST http://127.0.0.1:21100/admin/promote_standby/0/4
+```
 
 ### Consistency (per group)
 
@@ -108,7 +123,8 @@ CLI: `--mode`, `--node-id`, `--nodes`, `--base-port`, `--groups`, `--data-dir`,
 |-----|--------|
 | `propose` Ok | Linearizable write |
 | `read_linearizable` | Linearizable read (ReadIndex) |
-| `with_fsm` | Local / may be stale — debug only |
+| `read_stale` | Local + applied watermark (`enable_stale_queries`) |
+| `with_fsm` | Local / may be stale — debug / metrics |
 
 See [docs/jepsen.md](docs/jepsen.md) · [中文](docs/jepsen.zh-CN.md).
 
@@ -118,12 +134,12 @@ See [docs/jepsen.md](docs/jepsen.md) · [中文](docs/jepsen.zh-CN.md).
 
 ```bash
 ./scripts/acceptance.sh          # ≥10 groups, kill real leader PID
-./scripts/chaos.sh               # SCENARIO=kill_leader|rolling|...
-./scripts/run_jepsen.sh          # local Clojure Jepsen (~30s)
-./scripts/test_all.sh            # unit + chaos_failover + acceptance
+./scripts/chaos.sh               # SCENARIO=kill_leader|rolling|standby|...
+STANDBY=1 ./scripts/run_jepsen.sh
+./scripts/test_all.sh            # unit + chaos_* + acceptance
 
 cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
-cargo test -p multiraft-net --test chaos_failover
+cargo test -p multiraft-net --test chaos_failover --test chaos_standby
 ```
 
 Chaos checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md) · [中文](docs/chaos-checklist.zh-CN.md).  

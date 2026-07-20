@@ -468,7 +468,9 @@ impl<S: StateMachine> MultiRaft<S> {
                 last_term: ad.last_term,
             }),
             Err(MultiRaftError::UnknownGroup(g)) => Err(MultiRaftError::UnknownGroup(g)),
-            Err(e) => Ok(RecoverOutcome::FetchFailed(e.to_string())),
+            Err(e) => Ok(RecoverOutcome::FetchFailed {
+                error: e.to_string(),
+            }),
         }
     }
 
@@ -490,7 +492,11 @@ impl<S: StateMachine> MultiRaft<S> {
 
         let fetched = match self.fetch_snapshot_bytes(&url).await {
             Ok(f) => f,
-            Err(e) => return Ok(RecoverOutcome::FetchFailed(e.to_string())),
+            Err(e) => {
+                return Ok(RecoverOutcome::FetchFailed {
+                    error: e.to_string(),
+                })
+            }
         };
 
         let snapshot_id = fetched
@@ -694,6 +700,19 @@ impl<S: StateMachine> MultiRaft<S> {
                 .membership_config
                 .membership()
                 .voter_ids()
+                .collect(),
+        )
+    }
+
+    /// Current learner (Standby) ids from raft metrics.
+    pub fn learner_ids(&self, group: u64) -> Option<BTreeSet<NodeId>> {
+        let raft = self.raft(group)?;
+        Some(
+            raft.metrics()
+                .borrow_watched()
+                .membership_config
+                .membership()
+                .learner_ids()
                 .collect(),
         )
     }
@@ -1268,7 +1287,11 @@ async fn daisy_sync_once<S: StateMachine>(
     let url = format!("{}/snapshots/{group}/latest", base.trim_end_matches('/'));
     let fetched = match pull_snapshot_chunked(&url, chunk, temp_dir).await {
         Ok(f) => f,
-        Err(e) => return Ok(RecoverOutcome::FetchFailed(e.to_string())),
+        Err(e) => {
+                return Ok(RecoverOutcome::FetchFailed {
+                    error: e.to_string(),
+                })
+            }
     };
     let snapshot_id = fetched
         .snapshot_id

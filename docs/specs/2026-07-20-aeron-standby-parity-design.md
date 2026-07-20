@@ -36,7 +36,7 @@ Constraints:
 | A9 | Warm DR / TransitionModule | — | **`promote_standby` Learner→Voter** (+ demote) | **P1** |
 | A10 | Multi-standby / selective services | Single standby | Multi learner + `best_snapshot_ad` newest pick | **P2** |
 | A11 | Archive recording semantics | Directory catalog | **HTTP Range** chunked fetch + resume temp + sha256 | **P2** |
-| A12 | Backup query / auth / PremiumClusterTool | — | Ops CLI / richer admin; auth out of scope | P2 |
+| A12 | Backup query / auth / PremiumClusterTool | — | Admin status/catalog/best_ad/daisy_sync + structured recover; **auth out of scope** | **P2/ops** |
 | A13 | Clustered services on standby (slow query) | — | `read_stale` + `enable_stale_queries` | **P3** |
 
 ---

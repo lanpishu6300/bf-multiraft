@@ -40,12 +40,23 @@ curl -s -X POST http://127.0.0.1:21100/groups/0/inc \
   -H 'content-type: application/json' -d '{"delta":1}'
 ```
 
+可选 Standby（`STANDBY=1` → 节点 4 Learner）：
+
+```bash
+STANDBY=1 ./scripts/run_demo_cluster.sh
+curl -s http://127.0.0.1:21100/admin/groups/0/status
+curl -s -X POST http://127.0.0.1:21100/admin/standby_snapshot/0
+curl -s http://127.0.0.1:21103/admin/catalog/0
+curl -s -X POST http://127.0.0.1:21100/admin/replicate_standby_snapshot/0
+curl -s http://127.0.0.1:21103/groups/0/stale
+```
+
 ## 验收 / Chaos / Jepsen
 
 ```bash
 ./scripts/acceptance.sh
-./scripts/chaos.sh
-./scripts/run_jepsen.sh          # ~30s smoke
+SCENARIO=standby ./scripts/chaos.sh
+STANDBY=1 ./scripts/run_jepsen.sh          # ~30s smoke
 ./scripts/test_all.sh            # CHAOS=1 含 chaos.sh
 ```
 

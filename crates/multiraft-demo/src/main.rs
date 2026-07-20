@@ -655,6 +655,13 @@ async fn serve_admin(addr: SocketAddr, state: Arc<DemoState>) -> anyhow::Result<
             "/admin/demote_standby/:group/:id",
             post(admin_demote_standby),
         )
+        .route("/admin/groups/:group/status", get(admin_group_status))
+        .route("/admin/catalog/:group", get(admin_catalog))
+        .route(
+            "/admin/best_snapshot_ad/:group",
+            get(admin_best_snapshot_ad),
+        )
+        .route("/admin/daisy_sync/:group", post(admin_daisy_sync))
         .route("/snapshots/:id/latest", get(snapshot_latest))
         .with_state(state);
 
@@ -913,7 +920,15 @@ async fn admin_replicate_standby_snapshot(
         }
     } else {
         match n.try_recover_from_standby_ads(group).await {
-            Ok(out) => serde_json::json!({ "ok": true, "outcome": format!("{out:?}") }),
+            Ok(out) => {
+                let mut v = serde_json::to_value(&out).unwrap_or_else(|_| {
+                    serde_json::json!({ "outcome": "unknown" })
+                });
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("ok".into(), serde_json::json!(true));
+                }
+                v
+            }
             Err(e) => {
                 return Err((
                     StatusCode::CONFLICT,
@@ -926,6 +941,149 @@ async fn admin_replicate_standby_snapshot(
         }
     };
     Ok(Json(outcome))
+}
+
+async fn admin_group_status(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let Some(n) = state.nodes.first() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrResp {
+                ok: false,
+                error: "no local node".into(),
+            }),
+        ));
+    };
+    if !state.group_ids.contains(&group) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("unknown group {group}"),
+            }),
+        ));
+    }
+    let (applied_index, applied_term) = n.local_applied(group).unwrap_or((0, 0));
+    let voters: Vec<u64> = n
+        .voter_ids(group)
+        .map(|s| s.into_iter().collect())
+        .unwrap_or_default();
+    let learners: Vec<u64> = n
+        .learner_ids(group)
+        .map(|s| s.into_iter().collect())
+        .unwrap_or_default();
+    let mut throttle: Vec<u64> = n.standby_throttle_ids().into_iter().collect();
+    throttle.sort_unstable();
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "group": group,
+        "node_id": n.node_id(),
+        "leader": n.leader(group),
+        "is_leader": n.is_leader(group),
+        "voters": voters,
+        "learners": learners,
+        "applied_index": applied_index,
+        "applied_term": applied_term,
+        "stale_queries_enabled": n.stale_queries_enabled(),
+        "standby_throttle_ids": throttle,
+    })))
+}
+
+async fn admin_catalog(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let Some(n) = state.nodes.first() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrResp {
+                ok: false,
+                error: "no local node".into(),
+            }),
+        ));
+    };
+    match n.latest_catalog_entry(group) {
+        Some(e) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "group": e.group,
+            "last_index": e.last_index,
+            "last_term": e.last_term,
+            "snapshot_id": e.snapshot_id,
+            "size": e.size,
+            "sha256_hex": e.sha256_hex,
+        }))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("no catalog entry for group {group}"),
+            }),
+        )),
+    }
+}
+
+async fn admin_best_snapshot_ad(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let Some(n) = state.nodes.first() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrResp {
+                ok: false,
+                error: "no local node".into(),
+            }),
+        ));
+    };
+    match n.best_snapshot_ad(group) {
+        Some(ad) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "ad": ad,
+        }))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrResp {
+                ok: false,
+                error: format!("no snapshot ad for group {group}"),
+            }),
+        )),
+    }
+}
+
+async fn admin_daisy_sync(
+    State(state): State<Arc<DemoState>>,
+    Path(group): Path<u64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
+    let Some(n) = state.nodes.first() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrResp {
+                ok: false,
+                error: "no local node".into(),
+            }),
+        ));
+    };
+    match n.sync_from_daisy_upstream(group).await {
+        Ok(out) => {
+            let mut v = serde_json::to_value(&out).unwrap_or_else(|_| {
+                serde_json::json!({ "outcome": "unknown" })
+            });
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("ok".into(), serde_json::json!(true));
+                obj.insert("group".into(), serde_json::json!(group));
+            }
+            Ok(Json(v))
+        }
+        Err(e) => Err((
+            StatusCode::CONFLICT,
+            Json(ErrResp {
+                ok: false,
+                error: e.to_string(),
+            }),
+        )),
+    }
 }
 
 async fn admin_promote_standby(

@@ -118,6 +118,11 @@ async fn standby_read_stale_offload() {
         .add_standby(group, standby_id)
         .await
         .expect("add_standby");
+    let learners = leader.learner_ids(group).expect("learners");
+    assert!(
+        learners.contains(&standby_id),
+        "standby should be learner: {learners:?}"
+    );
 
     for i in 0..5u64 {
         propose_on_leader(&voters, group, CounterFsm::encode_add(1, 1000 + i)).await;
