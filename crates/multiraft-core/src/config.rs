@@ -53,6 +53,14 @@ pub struct ClusterConfig {
     pub standby_replicate_delay_ms: u64,
     /// Node ids treated as standby for throttling (seed; also updated at runtime).
     pub standby_node_ids: Vec<NodeId>,
+    /// Chunk size for HTTP Range snapshot downloads (bytes). Default 64 KiB.
+    pub snapshot_fetch_chunk_bytes: usize,
+    /// Background daisy sync interval when [`Self::daisy_upstream_base`] is set (ms).
+    pub daisy_sync_interval_ms: u64,
+    /// If set on a Standby, pull snapshots from this upstream Standby's base URL
+    /// (e.g. `"http://127.0.0.1:23103"`) instead of only following the leader.
+    /// Path used: `{base}/snapshots/{group}/latest`.
+    pub daisy_upstream_base: Option<String>,
 }
 
 impl ClusterConfig {
@@ -83,6 +91,9 @@ impl ClusterConfig {
             standby_max_inflight: 8,
             standby_replicate_delay_ms: 0,
             standby_node_ids: Vec::new(),
+            snapshot_fetch_chunk_bytes: 65_536,
+            daisy_sync_interval_ms: 2_000,
+            daisy_upstream_base: None,
         }
     }
 }

@@ -16,7 +16,10 @@ use axum::Json;
 use axum::Router as AxumRouter;
 use axum::extract::Path;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
 use clap::Parser;
@@ -93,6 +96,11 @@ struct Args {
     /// Disable the background propose_loop (for Jepsen / external clients).
     #[arg(long, default_value_t = false)]
     no_auto_propose: bool,
+
+    /// Daisy-chain: pull snapshots from this upstream Standby admin base URL
+    /// (e.g. `http://127.0.0.1:23103`). Also honored via env `DAISY_UPSTREAM`.
+    #[arg(long)]
+    daisy_upstream: Option<String>,
 }
 
 struct DemoState {
@@ -307,6 +315,11 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.data_dir)?;
 
     let peer_ids: Vec<u64> = peers.iter().map(|(id, _)| *id).collect();
+    let daisy_upstream = args
+        .daisy_upstream
+        .clone()
+        .or_else(|| std::env::var("DAISY_UPSTREAM").ok().filter(|s| !s.is_empty()));
+
     let mut config = ClusterConfig::for_test(node_id, &peer_ids);
     config.peers = peers;
     config.data_dir = args.data_dir.clone();
@@ -314,11 +327,13 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     config.snapshot_mode = snapshot_mode;
     config.snapshot_keep = 2;
     config.admin_advertise_addr = Some(admin_addr);
+    config.daisy_upstream_base = daisy_upstream.clone();
 
     info!(
         node_id,
         ?role,
         ?snapshot_mode,
+        ?daisy_upstream,
         nodes = args.nodes,
         groups = args.groups,
         base_port = args.base_port,
@@ -327,6 +342,10 @@ async fn run_node(args: Args) -> anyhow::Result<()> {
     );
 
     let node = MultiRaft::start_grpc(config).await?;
+    if daisy_upstream.is_some() {
+        node.spawn_daisy_sync_loop(group_ids.clone());
+        info!(node_id, "spawned daisy snapshot sync loop");
+    }
 
     // Create groups with retries so peers that start later can join initialize.
     let mut last_err = None;
@@ -754,7 +773,8 @@ struct SnapshotLatestMeta {
 async fn snapshot_latest(
     State(state): State<Arc<DemoState>>,
     Path(id): Path<u64>,
-) -> Result<(axum::http::HeaderMap, Vec<u8>), StatusCode> {
+    req_headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     let Some(n) = state.nodes.first() else {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
@@ -777,7 +797,7 @@ async fn snapshot_latest(
         size: entry.size,
         sha256_hex: entry.sha256_hex.clone(),
     };
-    let mut headers = axum::http::HeaderMap::new();
+    let mut headers = HeaderMap::new();
     if let Ok(v) = serde_json::to_string(&meta) {
         if let Ok(hv) = axum::http::HeaderValue::from_str(&v) {
             headers.insert("x-snapshot-meta", hv);
@@ -799,7 +819,49 @@ async fn snapshot_latest(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/octet-stream"),
     );
-    Ok((headers, data))
+    headers.insert(
+        axum::http::header::ACCEPT_RANGES,
+        axum::http::HeaderValue::from_static("bytes"),
+    );
+
+    if let Some(range) = req_headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some((start, end)) = parse_bytes_range(range, data.len() as u64) {
+            let end_incl = end.min(data.len() as u64 - 1);
+            if start > end_incl || start >= data.len() as u64 {
+                return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+            }
+            let body = data[start as usize..=end_incl as usize].to_vec();
+            let cr = format!("bytes {start}-{end_incl}/{}", data.len());
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&cr) {
+                headers.insert(axum::http::header::CONTENT_RANGE, hv);
+            }
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&body.len().to_string()) {
+                headers.insert(axum::http::header::CONTENT_LENGTH, hv);
+            }
+            return Ok((StatusCode::PARTIAL_CONTENT, headers, body).into_response());
+        }
+    }
+
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&data.len().to_string()) {
+        headers.insert(axum::http::header::CONTENT_LENGTH, hv);
+    }
+    Ok((StatusCode::OK, headers, data).into_response())
+}
+
+/// Parse `bytes=start-end` (end optional). Returns inclusive `(start, end)`.
+fn parse_bytes_range(range: &str, total: u64) -> Option<(u64, u64)> {
+    let rest = range.strip_prefix("bytes=")?;
+    let (start_s, end_s) = rest.split_once('-')?;
+    let start: u64 = start_s.parse().ok()?;
+    let end = if end_s.is_empty() {
+        total.saturating_sub(1)
+    } else {
+        end_s.parse().ok()?
+    };
+    Some((start, end))
 }
 
 #[derive(Deserialize, Default)]

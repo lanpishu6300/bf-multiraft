@@ -9,6 +9,8 @@
 # Optional Standby (Learner):
 #   STANDBY=1 → also start node 4 as --role standby (StandbyOffload),
 #   then curl the leader to add_standby for group 0.
+#   STANDBY=2 or DAISY=1 → also start node 5 as daisy Standby that pulls
+#   snapshots from node 4 admin (DAISY_UPSTREAM); node 5 is not add_learner'd.
 #
 # Compatible with macOS Bash 3.2.
 set -euo pipefail
@@ -19,6 +21,14 @@ GROUPS="${GROUPS:-10}"
 NODES="${NODES:-3}"
 DATA="${DATA_DIR:-$ROOT/.demo-data}"
 STANDBY="${STANDBY:-0}"
+DAISY="${DAISY:-0}"
+if [[ "$STANDBY" == "2" ]]; then
+  DAISY=1
+  STANDBY=1
+fi
+if [[ "$DAISY" == "1" && "$STANDBY" != "1" ]]; then
+  STANDBY=1
+fi
 
 # Jepsen / external clients: disable background propose_loop.
 # Set via JEPSEN=1 or NO_AUTO_PROPOSE=1.
@@ -121,6 +131,32 @@ if [[ "$STANDBY" == "1" ]]; then
     echo "    curl -X POST http://127.0.0.1:$((BASE_PORT + 100))/admin/add_standby/0/${STANDBY_ID}"
   fi
   echo "  optional trigger: curl -X POST http://127.0.0.1:$((BASE_PORT + 100))/admin/standby_snapshot/0"
+fi
+
+if [[ "$DAISY" == "1" ]]; then
+  # Node 4 is the learner Standby; node 5 daisy-pulls snapshots only.
+  UPSTREAM_ID=$((NODES + 1))
+  DAISY_ID=$((NODES + 2))
+  UPSTREAM_ADMIN=$((BASE_PORT + 100 + UPSTREAM_ID - 1))
+  NODE_DATA="$DATA/node-$DAISY_ID"
+  mkdir -p "$NODE_DATA"
+  DAISY_UPSTREAM="http://127.0.0.1:${UPSTREAM_ADMIN}" \
+  "$BIN" \
+    --mode node \
+    --node-id "$DAISY_ID" \
+    --nodes "$NODES" \
+    --role standby \
+    --base-port "$BASE_PORT" \
+    --groups "$GROUPS" \
+    --data-dir "$NODE_DATA" \
+    --daisy-upstream "http://127.0.0.1:${UPSTREAM_ADMIN}" \
+    --no-auto-propose \
+    >"$DATA/node-$DAISY_ID.log" 2>&1 &
+  echo $! >"$DATA/node-$DAISY_ID.pid"
+  sleep 0.4
+  daisy_admin=$((BASE_PORT + 100 + DAISY_ID - 1))
+  echo "  daisy standby ${DAISY_ID}: pid=$(cat "$DATA/node-$DAISY_ID.pid") admin=http://127.0.0.1:${daisy_admin}/snapshots/0/latest upstream=http://127.0.0.1:${UPSTREAM_ADMIN} log=$DATA/node-$DAISY_ID.log"
+  echo "  (daisy node is NOT add_learner'd; it syncs snapshots from upstream Standby)"
 fi
 
 echo "  metrics: http://127.0.0.1:$((BASE_PORT + 100))/metrics/links"
