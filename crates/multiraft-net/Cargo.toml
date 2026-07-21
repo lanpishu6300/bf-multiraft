@@ -15,6 +15,7 @@ prost = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -27,6 +28,7 @@ tonic-build = { workspace = true }
 
 [dev-dependencies]
 axum = "0.7"
+bincode = { workspace = true }
 porcupine-rs = "0.3"
 sha2 = { workspace = true }
 tempfile = "3"

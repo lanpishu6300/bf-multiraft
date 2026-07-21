@@ -114,6 +114,7 @@ STANDBY=1 ./scripts/run_jepsen.sh
 | [docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md) · [English](docs/ARCHITECTURE.md) | Crate 边界 |
 | [设计规格（中文）](docs/specs/2026-07-18-multiraft-design.zh-CN.md) · [English](docs/specs/2026-07-18-multiraft-design.md) | 设计 |
 | [Wiki 首页](docs/wiki/zh/Home.md) · [English](docs/wiki/en/Home.md) | Wiki |
+| [docs/perf.zh-CN.md](docs/perf.zh-CN.md) · [English](docs/perf.md) | 性能 / 压测 |
 | [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md) · [English](CONTRIBUTING.md) | 贡献指南 |
 | [SUPPORT.zh-CN.md](SUPPORT.zh-CN.md) · [English](SUPPORT.md) | 支持渠道 |
 | [SECURITY.zh-CN.md](SECURITY.zh-CN.md) · [English](SECURITY.md) | 安全报告 |

@@ -3,7 +3,7 @@
 //! In-process [`Router`] adapted from openraft `examples/multi-raft-kv` at tag
 //! `v0.10.0-alpha.30`, implementing [`openraft_multi::GroupRouter`].
 //!
-//! Cross-process: [`GrpcRouter`] + tonic [`GrpcServer`] (UTF-8 JSON payloads).
+//! Cross-process: [`GrpcRouter`] + tonic [`GrpcServer`] (bincode payloads).
 //!
 //! Public orchestration facade: [`MultiRaft`] (`use multiraft_net::MultiRaft`).
 
@@ -40,10 +40,11 @@ pub use standby_throttle::StandbyThrottle;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-pub fn encode<T: Serialize>(t: T) -> String {
-    serde_json::to_string(&t).unwrap()
+/// Compact binary Raft RPC encoding (`bincode`).
+pub fn encode<T: Serialize>(t: T) -> Vec<u8> {
+    bincode::serialize(&t).expect("raft encode")
 }
 
-pub fn decode<T: DeserializeOwned>(s: &str) -> T {
-    serde_json::from_str(s).unwrap()
+pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> T {
+    bincode::deserialize(bytes).expect("raft decode")
 }

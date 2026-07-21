@@ -44,6 +44,8 @@ enum Mode {
     Cluster,
     /// One OS process = one Raft node via `start_grpc`.
     Node,
+    /// In-process propose throughput / latency microbench (prints JSON metrics).
+    Bench,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -106,6 +108,18 @@ struct Args {
     /// (e.g. `http://127.0.0.1:23103`). Also honored via env `DAISY_UPSTREAM`.
     #[arg(long)]
     daisy_upstream: Option<String>,
+
+    /// `--mode bench`: number of sequential proposes after warmup.
+    #[arg(long, default_value_t = 5_000)]
+    bench_ops: u64,
+
+    /// `--mode bench`: concurrent proposers (1 = sequential).
+    #[arg(long, default_value_t = 1)]
+    bench_concurrency: u64,
+
+    /// `--mode bench`: use file-backed log under `{data-dir}/bench/` (else memory).
+    #[arg(long, default_value_t = false)]
+    bench_file_log: bool,
 }
 
 struct DemoState {
@@ -187,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
     match args.mode {
         Mode::Cluster => run_cluster(args).await,
         Mode::Node => run_node(args).await,
+        Mode::Bench => run_bench(args).await,
     }
 }
 
@@ -1400,4 +1415,198 @@ async fn shutdown_node(
         node_id: id,
         ok: true,
     }))
+}
+
+#[derive(Serialize)]
+struct BenchReport {
+    store: &'static str,
+    nodes: u64,
+    groups: u64,
+    ops: u64,
+    concurrency: u64,
+    warmup_ops: u64,
+    wall_ms: f64,
+    tps: f64,
+    latency_us_p50: f64,
+    latency_us_p95: f64,
+    latency_us_p99: f64,
+    latency_us_max: f64,
+    ok: u64,
+    err: u64,
+}
+
+fn percentile_us(sorted: &[u64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)] as f64
+}
+
+async fn run_bench(args: Args) -> anyhow::Result<()> {
+    let peer_ids: Vec<u64> = (1..=args.nodes).collect();
+    let group_ids: Vec<u64> = (0..args.groups.max(1)).collect();
+    let members = peer_ids.clone();
+
+    let data_root = if args.bench_file_log {
+        let root = args.data_dir.join("bench");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        Some(root)
+    } else {
+        None
+    };
+
+    let mut configs = Vec::new();
+    for &id in &peer_ids {
+        let mut cfg = ClusterConfig::for_test(id, &peer_ids);
+        // Faster election for local bench.
+        cfg.heartbeat_interval_ms = 50;
+        cfg.election_timeout_min_ms = 150;
+        cfg.election_timeout_max_ms = 300;
+        if let Some(ref root) = data_root {
+            cfg.data_dir = root.join(format!("node-{id}"));
+            std::fs::create_dir_all(&cfg.data_dir)?;
+        }
+        configs.push(cfg);
+    }
+
+    let nodes = MultiRaft::start_cluster(configs).await?;
+    for n in &nodes {
+        for &g in &group_ids {
+            n.create_group(g, &members).await?;
+        }
+    }
+    for &g in &group_ids {
+        wait_for_leader(&nodes, g, Duration::from_secs(10))
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no leader for group {g}"))?;
+    }
+
+    let warmup = (args.bench_ops / 10).clamp(50, 500);
+    let mut idem = 1u64;
+    for _ in 0..warmup {
+        let g = group_ids[(idem as usize) % group_ids.len()];
+        propose_bench(&nodes, g, CounterFsm::encode_add(1, idem)).await?;
+        idem += 1;
+    }
+
+    let ops = args.bench_ops.max(1);
+    let concurrency = args.bench_concurrency.max(1);
+    let mut latencies = Vec::with_capacity(ops as usize);
+    let mut ok = 0u64;
+    let mut err = 0u64;
+    let wall = Instant::now();
+
+    if concurrency == 1 {
+        for i in 0..ops {
+            let g = group_ids[(i as usize) % group_ids.len()];
+            let t0 = Instant::now();
+            match propose_bench(&nodes, g, CounterFsm::encode_add(1, idem)).await {
+                Ok(()) => {
+                    ok += 1;
+                    latencies.push(t0.elapsed().as_micros() as u64);
+                }
+                Err(_) => err += 1,
+            }
+            idem += 1;
+        }
+    } else {
+        use tokio::sync::Mutex;
+        let idem_lock = Arc::new(Mutex::new(idem));
+        let lat_lock = Arc::new(Mutex::new(Vec::new()));
+        let ok_c = Arc::new(AtomicU64::new(0));
+        let err_c = Arc::new(AtomicU64::new(0));
+        let nodes = Arc::new(nodes);
+        let group_ids = Arc::new(group_ids.clone());
+        let mut handles = Vec::new();
+        let per = ops / concurrency;
+        for _ in 0..concurrency {
+            let nodes = Arc::clone(&nodes);
+            let group_ids = Arc::clone(&group_ids);
+            let idem_lock = Arc::clone(&idem_lock);
+            let lat_lock = Arc::clone(&lat_lock);
+            let ok_c = Arc::clone(&ok_c);
+            let err_c = Arc::clone(&err_c);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..per {
+                    let key = {
+                        let mut g = idem_lock.lock().await;
+                        let v = *g;
+                        *g += 1;
+                        v
+                    };
+                    let gid = group_ids[(key as usize) % group_ids.len()];
+                    let t0 = Instant::now();
+                    match propose_bench(&nodes, gid, CounterFsm::encode_add(1, key)).await {
+                        Ok(()) => {
+                            ok_c.fetch_add(1, Ordering::Relaxed);
+                            lat_lock.lock().await.push(t0.elapsed().as_micros() as u64);
+                        }
+                        Err(_) => {
+                            err_c.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.await?;
+        }
+        ok = ok_c.load(Ordering::Relaxed);
+        err = err_c.load(Ordering::Relaxed);
+        latencies = lat_lock.lock().await.clone();
+        // nodes moved into Arc; drop via Arc
+        let _ = nodes;
+    }
+
+    let wall_ms = wall.elapsed().as_secs_f64() * 1000.0;
+    latencies.sort_unstable();
+    let tps = if wall_ms > 0.0 {
+        (ok as f64) * 1000.0 / wall_ms
+    } else {
+        0.0
+    };
+
+    let report = BenchReport {
+        store: if args.bench_file_log {
+            "file"
+        } else {
+            "memory"
+        },
+        nodes: args.nodes,
+        groups: args.groups.max(1),
+        ops,
+        concurrency,
+        warmup_ops: warmup,
+        wall_ms,
+        tps,
+        latency_us_p50: percentile_us(&latencies, 0.50),
+        latency_us_p95: percentile_us(&latencies, 0.95),
+        latency_us_p99: percentile_us(&latencies, 0.99),
+        latency_us_max: latencies.last().copied().unwrap_or(0) as f64,
+        ok,
+        err,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+async fn propose_bench(nodes: &[MultiRaft], group: u64, data: Vec<u8>) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for n in nodes {
+            if n.is_leader(group) {
+                match n.propose(group, data.clone()).await {
+                    Ok(_) => return Ok(()),
+                    Err(MultiRaftError::NotLeader { .. }) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("propose timeout group={group}");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }

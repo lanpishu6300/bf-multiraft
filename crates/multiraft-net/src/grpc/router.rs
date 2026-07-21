@@ -151,33 +151,32 @@ impl GrpcRouter {
 
         let encoded_req = encode(&req);
         tracing::debug!(
-            "grpc send to: node={}, group={}, path={}, req={}",
             to_node,
             to_group,
             path,
-            encoded_req
+            req_bytes = encoded_req.len(),
+            "grpc send"
         );
 
         let response = client
             .call(RaftRequest {
                 group_id: to_group,
                 path: path.to_string(),
-                payload: encoded_req.into_bytes(),
+                payload: encoded_req,
             })
             .await
             .map_err(|e| Unreachable::new(&GrpcError(format!("rpc to {to_node}: {e}"))))?;
 
-        let resp_str = String::from_utf8(response.into_inner().payload)
-            .map_err(|e| Unreachable::new(&GrpcError(e.to_string())))?;
+        let resp_bytes = response.into_inner().payload;
         tracing::debug!(
-            "grpc resp from: node={}, group={}, path={}, resp={}",
             to_node,
             to_group,
             path,
-            resp_str
+            resp_bytes = resp_bytes.len(),
+            "grpc resp"
         );
 
-        let res = decode::<Result<Resp, RaftError>>(&resp_str);
+        let res = decode::<Result<Resp, RaftError>>(&resp_bytes);
         res.map_err(|e| Unreachable::new(&GrpcError(e.to_string())))
     }
 }

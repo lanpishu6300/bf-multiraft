@@ -114,10 +114,10 @@ impl<S: StateMachine> Node<S> {
             };
 
             let res = match path.as_str() {
-                "/raft/append" => api::append(&raft, payload).await,
-                "/raft/snapshot" => api::snapshot(&raft, payload).await,
-                "/raft/vote" => api::vote(&raft, payload).await,
-                "/raft/transfer_leader" => api::transfer_leader(&raft, payload).await,
+                "/raft/append" => api::append(&raft, &payload).await,
+                "/raft/snapshot" => api::snapshot(&raft, &payload).await,
+                "/raft/vote" => api::vote(&raft, &payload).await,
+                "/raft/transfer_leader" => api::transfer_leader(&raft, &payload).await,
                 _ => {
                     tracing::warn!("unknown path: {}", path);
                     encode::<Result<(), typ::RaftError>>(Err(typ::RaftError::Fatal(
