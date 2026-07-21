@@ -1,13 +1,18 @@
 //! File-backed `RaftLogStorage` under `{data_dir}/`.
 //!
-//! Persists log entries + hard state (vote, committed, last_purged) as JSON so a
-//! process restart can rebuild Raft state via log replay. Snapshot storage is
-//! out of scope for this store (SM rebuilds from the log).
+//! Log entries use append-only length-prefixed bincode (`log.bin`) so each Raft
+//! append is O(new entries) with compact serialization. Truncate / purge rewrite
+//! the file. Hard state stays in `hard_state.json`. Legacy `log.json` /
+//! `log.ndjson` are loaded once and migrated on open.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Write;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,7 +31,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 const HARD_STATE_FILE: &str = "hard_state.json";
-const LOG_FILE: &str = "log.json";
+const LOG_FILE_LEGACY: &str = "log.json";
+const LOG_NDJSON: &str = "log.ndjson";
+const LOG_BIN: &str = "log.bin";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(bound = "")]
@@ -98,14 +105,45 @@ where
         atomic_write_json(self.dir.join(HARD_STATE_FILE), &hs)
     }
 
-    fn persist_log(&self) -> io::Result<()> {
-        let entries: Vec<C::Entry> = self.log.values().cloned().collect();
-        atomic_write_json(self.dir.join(LOG_FILE), &entries)
+    /// Append-only write of newly inserted entries (steady-state propose path).
+    fn append_log_entries(&self, entries: &[C::Entry]) -> io::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut buf = Vec::new();
+        for ent in entries {
+            let raw = bincode::serialize(ent)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len = u32::try_from(raw.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "entry too large"))?;
+            buf.extend_from_slice(&len.to_le_bytes());
+            buf.extend_from_slice(&raw);
+        }
+        let path = self.dir.join(LOG_BIN);
+        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        f.write_all(&buf)?;
+        Ok(())
     }
 
-    fn persist_all(&self) -> io::Result<()> {
-        self.persist_hard_state()?;
-        self.persist_log()?;
+    /// Full rewrite used after truncate / purge (and legacy migration).
+    fn rewrite_log(&self) -> io::Result<()> {
+        let path = self.dir.join(LOG_BIN);
+        let tmp = path.with_extension("bin.tmp");
+        {
+            let mut buf = Vec::new();
+            for ent in self.log.values() {
+                let raw = bincode::serialize(ent)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let len = u32::try_from(raw.len())
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "entry too large"))?;
+                buf.extend_from_slice(&len.to_le_bytes());
+                buf.extend_from_slice(&raw);
+            }
+            fs::write(&tmp, &buf)?;
+        }
+        fs::rename(&tmp, &path)?;
+        let _ = fs::remove_file(self.dir.join(LOG_FILE_LEGACY));
+        let _ = fs::remove_file(self.dir.join(LOG_NDJSON));
         Ok(())
     }
 
@@ -155,10 +193,12 @@ where
     where
         I: IntoIterator<Item = C::Entry>,
     {
+        let mut newly = Vec::new();
         for entry in entries {
-            self.log.insert(entry.index(), entry);
+            self.log.insert(entry.index(), entry.clone());
+            newly.push(entry);
         }
-        let res = self.persist_all();
+        let res = self.append_log_entries(&newly);
         callback.io_completed(res.as_ref().map(|_| ()).map_err(|e| io::Error::new(e.kind(), e.to_string())));
         res
     }
@@ -172,7 +212,7 @@ where
         for key in keys {
             self.log.remove(&key);
         }
-        self.persist_log()
+        self.rewrite_log()
     }
 
     async fn purge(&mut self, log_id: LogIdOf<C>) -> Result<(), io::Error> {
@@ -185,7 +225,8 @@ where
         for key in keys {
             self.log.remove(&key);
         }
-        self.persist_all()
+        self.persist_hard_state()?;
+        self.rewrite_log()
     }
 }
 
@@ -206,17 +247,92 @@ where
 fn load_log<C>(dir: &Path) -> io::Result<BTreeMap<u64, C::Entry>>
 where
     C: RaftTypeConfig,
+    C::Entry: Clone + DeserializeOwned + Serialize,
+{
+    let bin = dir.join(LOG_BIN);
+    if bin.exists() {
+        return load_bin::<C>(&bin);
+    }
+
+    // Migrate older formats once into log.bin.
+    let mut map = BTreeMap::new();
+    let ndjson = dir.join(LOG_NDJSON);
+    if ndjson.exists() {
+        map = load_ndjson::<C>(&ndjson)?;
+    } else {
+        let legacy = dir.join(LOG_FILE_LEGACY);
+        if legacy.exists() {
+            let bytes = fs::read(&legacy)?;
+            let entries: Vec<EntryOf<C>> = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            for ent in entries {
+                map.insert(ent.index(), ent);
+            }
+        }
+    }
+    if !map.is_empty() {
+        let tmp_store = FileLogInner::<C> {
+            dir: dir.to_path_buf(),
+            last_purged_log_id: None,
+            log: map.clone(),
+            committed: None,
+            vote: None,
+        };
+        tmp_store.rewrite_log()?;
+    }
+    Ok(map)
+}
+
+fn load_bin<C>(path: &Path) -> io::Result<BTreeMap<u64, C::Entry>>
+where
+    C: RaftTypeConfig,
     C::Entry: DeserializeOwned,
 {
-    let path = dir.join(LOG_FILE);
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let bytes = fs::read(&path)?;
-    let entries: Vec<EntryOf<C>> =
-        serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let bytes = fs::read(path)?;
     let mut map = BTreeMap::new();
-    for ent in entries {
+    let mut off = 0usize;
+    while off + 4 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+        off += 4;
+        if off + len > bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: truncated frame at {}", path.display(), off),
+            ));
+        }
+        let ent: EntryOf<C> = bincode::deserialize(&bytes[off..off + len])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        off += len;
+        map.insert(ent.index(), ent);
+    }
+    if off != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: trailing {} bytes", path.display(), bytes.len() - off),
+        ));
+    }
+    Ok(map)
+}
+
+fn load_ndjson<C>(path: &Path) -> io::Result<BTreeMap<u64, C::Entry>>
+where
+    C: RaftTypeConfig,
+    C::Entry: DeserializeOwned,
+{
+    let f = fs::File::open(path)?;
+    let reader = BufReader::new(f);
+    let mut map = BTreeMap::new();
+    for (lineno, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ent: EntryOf<C> = serde_json::from_str(&line).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}:{}: {e}", path.display(), lineno + 1),
+            )
+        })?;
         map.insert(ent.index(), ent);
     }
     Ok(map)

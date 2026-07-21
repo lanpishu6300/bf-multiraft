@@ -72,21 +72,16 @@ pub(crate) async fn demux_raft_call<S: StateMachine>(
                 let payload = encode::<Result<(), typ::RaftError>>(Err(
                     typ::RaftError::Fatal(openraft::error::Fatal::Stopped),
                 ));
-                return Ok(Response::new(RaftResponse {
-                    payload: payload.into_bytes(),
-                }));
+                return Ok(Response::new(RaftResponse { payload }));
             }
         }
     };
 
-    let payload = String::from_utf8(req.payload)
-        .map_err(|e| Status::invalid_argument(format!("payload utf-8: {e}")))?;
-
     let res = match req.path.as_str() {
-        "/raft/append" => api::append(&raft, payload).await,
-        "/raft/snapshot" => api::snapshot(&raft, payload).await,
-        "/raft/vote" => api::vote(&raft, payload).await,
-        "/raft/transfer_leader" => api::transfer_leader(&raft, payload).await,
+        "/raft/append" => api::append(&raft, &req.payload).await,
+        "/raft/snapshot" => api::snapshot(&raft, &req.payload).await,
+        "/raft/vote" => api::vote(&raft, &req.payload).await,
+        "/raft/transfer_leader" => api::transfer_leader(&raft, &req.payload).await,
         _ => {
             tracing::warn!("unknown grpc path: {}", req.path);
             encode::<Result<(), typ::RaftError>>(Err(typ::RaftError::Fatal(
@@ -95,7 +90,5 @@ pub(crate) async fn demux_raft_call<S: StateMachine>(
         }
     };
 
-    Ok(Response::new(RaftResponse {
-        payload: res.into_bytes(),
-    }))
+    Ok(Response::new(RaftResponse { payload: res }))
 }

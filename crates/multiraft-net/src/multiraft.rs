@@ -1079,6 +1079,9 @@ impl<S: StateMachine> MultiRaft<S> {
             election_timeout_max: self.config.election_timeout_max_ms,
             max_in_snapshot_log_to_keep: 0,
             snapshot_policy,
+            // Wipe/restart chaos and follower catch-up can present a shorter log
+            // than the leader last matched; without this openraft panics.
+            allow_log_reversion: Some(true),
             ..Default::default()
         };
         let config = Arc::new(

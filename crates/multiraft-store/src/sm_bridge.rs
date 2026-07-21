@@ -381,7 +381,7 @@ where
             let mut inner = self.inner.lock().await;
 
             while let Some((entry, responder)) = entries.try_next().await? {
-                tracing::debug!(%entry.log_id, "replicate to sm");
+                tracing::trace!(%entry.log_id, "replicate to sm");
 
                 inner.last_applied_log = Some(entry.log_id.clone());
 

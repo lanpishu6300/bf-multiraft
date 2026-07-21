@@ -27,7 +27,7 @@ impl CounterFsm {
     }
 
     pub fn encode_add(delta: i64, idem: u64) -> Vec<u8> {
-        serde_json::to_vec(&Cmd { idem, delta }).unwrap()
+        bincode::serialize(&Cmd { idem, delta }).unwrap()
     }
 
     pub fn value(&self, group: GroupId) -> i64 {
@@ -44,7 +44,7 @@ impl StateMachine for CounterFsm {
         _index: u64,
         data: &[u8],
     ) -> Result<ApplyOut, Self::Error> {
-        let cmd: Cmd = serde_json::from_slice(data)
+        let cmd: Cmd = bincode::deserialize(data)
             .map_err(|e| CounterError::Decode(e.to_string()))?;
         let seen = self.seen.entry(group).or_default();
         if seen.insert(cmd.idem) {

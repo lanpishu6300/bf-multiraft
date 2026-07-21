@@ -41,8 +41,8 @@ impl std::error::Error for RouterError {}
 pub struct NodeMessage {
     pub group_id: GroupId,
     pub path: String,
-    pub payload: String,
-    pub response_tx: oneshot::Sender<String>,
+    pub payload: Vec<u8>,
+    pub response_tx: oneshot::Sender<Vec<u8>>,
 }
 
 /// Multi-Raft router: one channel per node, shared by all groups on that node.
@@ -109,11 +109,11 @@ impl Router {
 
         let encoded_req = encode(&req);
         tracing::debug!(
-            "send to: node={}, group={}, path={}, req={}",
             to_node,
             to_group,
             path,
-            encoded_req
+            req_bytes = encoded_req.len(),
+            "router send"
         );
 
         let mut tx = {
@@ -137,18 +137,18 @@ impl Router {
             .await
             .map_err(|e| Unreachable::new(&RouterError(e.to_string())))?;
 
-        let resp_str = resp_rx
+        let resp_bytes = resp_rx
             .await
             .map_err(|e| Unreachable::new(&RouterError(e.to_string())))?;
         tracing::debug!(
-            "resp from: node={}, group={}, path={}, resp={}",
             to_node,
             to_group,
             path,
-            resp_str
+            resp_bytes = resp_bytes.len(),
+            "router resp"
         );
 
-        let res = decode::<Result<Resp, RaftError>>(&resp_str);
+        let res = decode::<Result<Resp, RaftError>>(&resp_bytes);
         res.map_err(|e| Unreachable::new(&RouterError(e.to_string())))
     }
 

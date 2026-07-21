@@ -146,7 +146,8 @@ cargo test -p multiraft-net --test linearizability_porcupine -- --nocapture
 cargo test -p multiraft-net --test chaos_failover --test chaos_standby
 ```
 
-Chaos checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md) · [中文](docs/chaos-checklist.zh-CN.md).  
+Chaos checklist: [docs/chaos-checklist.md](docs/chaos-checklist.md) · [中文](docs/chaos-checklist.zh-CN.md).
+Performance / load: [docs/perf.md](docs/perf.md) · [中文](docs/perf.zh-CN.md).  
 Clean `target/` before large rebuilds if disk is tight.
 
 ---
